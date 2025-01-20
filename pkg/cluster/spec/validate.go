@@ -169,7 +169,7 @@ func CheckClusterDirConflict(clusterList map[string]Metadata, clusterName string
 			continue
 		}
 		for _, d2 := range existingEntries {
-			if d1.instance.GetHost() != d2.instance.GetHost() {
+			if d1.instance.GetManageHost() != d2.instance.GetManageHost() {
 				continue
 			}
 
@@ -186,12 +186,12 @@ func CheckClusterDirConflict(clusterList map[string]Metadata, clusterName string
 					"ThisDirKind":    d1.dirKind,
 					"ThisDir":        d1.dir,
 					"ThisComponent":  d1.instance.ComponentName(),
-					"ThisHost":       d1.instance.GetHost(),
+					"ThisHost":       d1.instance.GetManageHost(),
 					"ExistCluster":   d2.clusterName,
 					"ExistDirKind":   d2.dirKind,
 					"ExistDir":       d2.dir,
 					"ExistComponent": d2.instance.ComponentName(),
-					"ExistHost":      d2.instance.GetHost(),
+					"ExistHost":      d2.instance.GetManageHost(),
 				}
 				zap.L().Info("Meet deploy directory conflict", zap.Any("info", properties))
 				return errDeployDirConflict.New("Deploy directory conflicts to an existing cluster").WithProperty(tui.SuggestionFromTemplate(`
@@ -219,7 +219,7 @@ Please change to use another directory or another host.
 // ref https://github.com/pingcap/tiup/issues/1047#issuecomment-761711508
 func CheckClusterDirOverlap(entries []DirEntry) error {
 	ignore := func(d1, d2 DirEntry) bool {
-		return (d1.instance.GetHost() != d2.instance.GetHost()) ||
+		return (d1.instance.GetManageHost() != d2.instance.GetManageHost()) ||
 			d1.dir == "" || d2.dir == "" ||
 			strings.HasSuffix(d1.dirKind, "deploy directory") ||
 			strings.HasSuffix(d2.dirKind, "deploy directory")
@@ -258,11 +258,11 @@ func CheckClusterDirOverlap(entries []DirEntry) error {
 					"ThisDirKind":   d1.dirKind,
 					"ThisDir":       d1.dir,
 					"ThisComponent": d1.instance.ComponentName(),
-					"ThisHost":      d1.instance.GetHost(),
+					"ThisHost":      d1.instance.GetManageHost(),
 					"ThatDirKind":   d2.dirKind,
 					"ThatDir":       d2.dir,
 					"ThatComponent": d2.instance.ComponentName(),
-					"ThatHost":      d2.instance.GetHost(),
+					"ThatHost":      d2.instance.GetManageHost(),
 				}
 				zap.L().Info("Meet deploy directory overlap", zap.Any("info", properties))
 				return errDeployDirOverlap.New("Deploy directory overlaps to another instance").WithProperty(tui.SuggestionFromTemplate(`
@@ -316,8 +316,8 @@ func CheckClusterPortConflict(clusterList map[string]Metadata, clusterName strin
 					instance:      inst,
 				})
 			}
-			if !uniqueHosts.Exist(inst.GetHost()) {
-				uniqueHosts.Insert(inst.GetHost())
+			if !uniqueHosts.Exist(inst.GetManageHost()) {
+				uniqueHosts.Insert(inst.GetManageHost())
 				existingEntries = append(existingEntries,
 					Entry{
 						clusterName:   name,
@@ -349,8 +349,8 @@ func CheckClusterPortConflict(clusterList map[string]Metadata, clusterName strin
 		if mOpt == nil {
 			return
 		}
-		if !uniqueHosts.Exist(inst.GetHost()) {
-			uniqueHosts.Insert(inst.GetHost())
+		if !uniqueHosts.Exist(inst.GetManageHost()) {
+			uniqueHosts.Insert(inst.GetManageHost())
 			currentEntries = append(currentEntries,
 				Entry{
 					componentName: RoleMonitor,
@@ -367,7 +367,7 @@ func CheckClusterPortConflict(clusterList map[string]Metadata, clusterName strin
 
 	for _, p1 := range currentEntries {
 		for _, p2 := range existingEntries {
-			if p1.instance.GetHost() != p2.instance.GetHost() {
+			if p1.instance.GetManageHost() != p2.instance.GetManageHost() {
 				continue
 			}
 
@@ -376,11 +376,11 @@ func CheckClusterPortConflict(clusterList map[string]Metadata, clusterName strin
 				properties := map[string]string{
 					"ThisPort":       strconv.Itoa(p1.port),
 					"ThisComponent":  p1.componentName,
-					"ThisHost":       p1.instance.GetHost(),
+					"ThisHost":       p1.instance.GetManageHost(),
 					"ExistCluster":   p2.clusterName,
 					"ExistPort":      strconv.Itoa(p2.port),
 					"ExistComponent": p2.componentName,
-					"ExistHost":      p2.instance.GetHost(),
+					"ExistHost":      p2.instance.GetManageHost(),
 				}
 				// if one of the instances marks itself as ignore_exporter, do not report
 				// the monitoring agent ports conflict and just skip
@@ -449,7 +449,8 @@ type TiKVLabelProvider interface {
 }
 
 func getHostFromAddress(addr string) string {
-	return strings.Split(addr, ":")[0]
+	host, _ := utils.ParseHostPort(addr)
+	return host
 }
 
 // CheckTiKVLabels will check if tikv missing label or have wrong label
@@ -839,6 +840,9 @@ func (s *Specification) CountDir(targetHost, dirPrefix string) int {
 			compSpec := reflect.Indirect(compSpecs.Index(index))
 			deployDir := compSpec.FieldByName("DeployDir").String()
 			host := compSpec.FieldByName("Host").String()
+			if compSpec.FieldByName("ManageHost").String() != "" {
+				host = compSpec.FieldByName("ManageHost").String()
+			}
 
 			for _, dirType := range dirTypes {
 				j, found := findField(compSpec, dirType)
@@ -931,12 +935,17 @@ func (s *Specification) validateTLSEnabled() error {
 	for _, c := range compList {
 		switch c.Name() {
 		case ComponentPD,
+			ComponentTSO,
+			ComponentScheduling,
 			ComponentTiDB,
 			ComponentTiKV,
 			ComponentTiFlash,
+			ComponentTiProxy,
 			ComponentPump,
 			ComponentDrainer,
 			ComponentCDC,
+			ComponentTiKVCDC,
+			ComponentDashboard,
 			ComponentPrometheus,
 			ComponentAlertmanager,
 			ComponentGrafana:
@@ -971,6 +980,38 @@ func (s *Specification) validatePDNames() error {
 			return errors.Errorf("component pd_servers.name is not supported duplicated, the name %s is duplicated", pd.Name)
 		}
 		pdNames.Insert(pd.Name)
+	}
+	return nil
+}
+
+func (s *Specification) validateTSONames() error {
+	// check tso server name
+	tsoNames := set.NewStringSet()
+	for _, tso := range s.TSOServers {
+		if tso.Name == "" {
+			continue
+		}
+
+		if tsoNames.Exist(tso.Name) {
+			return errors.Errorf("component tso_servers.name is not supported duplicated, the name %s is duplicated", tso.Name)
+		}
+		tsoNames.Insert(tso.Name)
+	}
+	return nil
+}
+
+func (s *Specification) validateSchedulingNames() error {
+	// check scheduling server name
+	schedulingNames := set.NewStringSet()
+	for _, scheduling := range s.SchedulingServers {
+		if scheduling.Name == "" {
+			continue
+		}
+
+		if schedulingNames.Exist(scheduling.Name) {
+			return errors.Errorf("component scheduling_servers.name is not supported duplicated, the name %s is duplicated", scheduling.Name)
+		}
+		schedulingNames.Insert(scheduling.Name)
 	}
 	return nil
 }
@@ -1054,6 +1095,8 @@ func (s *Specification) Validate() error {
 		s.dirConflictsDetect,
 		s.validateUserGroup,
 		s.validatePDNames,
+		s.validateTSONames,
+		s.validateSchedulingNames,
 		s.validateTiSparkSpec,
 		s.validateTiFlashConfigs,
 		s.validateMonitorAgent,
@@ -1069,7 +1112,7 @@ func (s *Specification) Validate() error {
 }
 
 // RelativePathDetect detect if some specific path is relative path and report error
-func RelativePathDetect(topo interface{}, isSkipField func(reflect.Value) bool) error {
+func RelativePathDetect(topo any, isSkipField func(reflect.Value) bool) error {
 	pathTypes := []string{
 		"ConfigFilePath",
 		"RuleDir",

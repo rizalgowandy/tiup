@@ -120,7 +120,7 @@ func SaveKeyInfo(key *KeyInfo, ty, dir string) (string, error) {
 		}
 	}
 	if utils.IsNotExist(dir) {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := utils.MkdirAll(dir, 0755); err != nil {
 			return "", errors.Annotate(err, "create key directory")
 		}
 	}
@@ -166,7 +166,7 @@ func SignManifestData(data []byte, ki *KeyInfo) ([]byte, error) {
 		return nil, errors.Annotate(err, "unmarshal manifest")
 	}
 
-	var signed interface{}
+	var signed any
 	if err := json.Unmarshal(m.Signed, &signed); err != nil {
 		return nil, errors.Annotate(err, "unmarshal manifest.signed")
 	}

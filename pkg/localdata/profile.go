@@ -121,14 +121,14 @@ func (p *Profile) ComponentInstalledPath(component string, version utils.Version
 func (p *Profile) SaveTo(path string, data []byte, perm os.FileMode) error {
 	fullPath := filepath.Join(p.root, path)
 	// create sub directory if needed
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+	if err := utils.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return errors.Trace(err)
 	}
-	return os.WriteFile(fullPath, data, perm)
+	return utils.WriteFile(fullPath, data, perm)
 }
 
 // WriteJSON writes struct to a file (in the profile directory) in JSON format
-func (p *Profile) WriteJSON(path string, data interface{}) error {
+func (p *Profile) WriteJSON(path string, data any) error {
 	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return errors.Trace(err)
@@ -137,7 +137,7 @@ func (p *Profile) WriteJSON(path string, data interface{}) error {
 }
 
 // readJSON read file and unmarshal to target `data`
-func (p *Profile) readJSON(path string, data interface{}) error {
+func (p *Profile) readJSON(path string, data any) error {
 	fullPath := filepath.Join(p.root, path)
 	file, err := os.Open(fullPath)
 	if err != nil {
@@ -275,9 +275,9 @@ func (p *Profile) ResetMirror(addr, root string) error {
 
 	// Only cache remote mirror
 	if strings.HasPrefix(addr, "http") && root != localRoot {
-		if strings.HasPrefix(root, "http") {
-			fmt.Printf("WARN: adding root certificate via internet: %s\n", root)
-			fmt.Printf("You can revoke this by remove %s\n", localRoot)
+		if strings.HasPrefix(root, "http") && !strings.HasPrefix(root, "https") {
+			fmt.Printf("WARN: Trusting component distribution key via insecure Internet: %s\n", root)
+			fmt.Printf("      To revoke TiUP's trust, remove this file: %s\n", localRoot)
 		}
 		_ = utils.Copy(p.Path("bin", "root.json"), localRoot)
 	}

@@ -34,6 +34,8 @@ var (
 )
 
 // parseDirs sets values of directories of component
+//
+//revive:disable
 func parseDirs(ctx context.Context, user string, ins spec.InstanceSpec, sshTimeout uint64, sshType executor.SSHType) (spec.InstanceSpec, error) {
 	logger := ctx.Value(logprinter.ContextKeyLogger).(*logprinter.Logger)
 	hostName, sshPort := ins.SSH()
@@ -196,7 +198,7 @@ func parseDirs(ctx context.Context, user string, ins spec.InstanceSpec, sshTimeo
 			if strings.Contains(line, "--initial-commit-ts=") {
 				tsArg := strings.Split(line, " ")[4] // 4 whitespaces ahead
 				tmpTs, _ := strconv.Atoi(strings.TrimPrefix(tsArg, "--initial-commit-ts="))
-				newIns.Config = make(map[string]interface{})
+				newIns.Config = make(map[string]any)
 				newIns.Config["initial-commit-ts"] = int64(tmpTs)
 			}
 		}
@@ -276,7 +278,7 @@ func parseTiflashConfig(ctx context.Context, e ctxt.Executor, spec *spec.TiFlash
 }
 
 func parseTiflashConfigFromFileData(spec *spec.TiFlashSpec, data []byte) error {
-	cfg := make(map[string]interface{})
+	cfg := make(map[string]any)
 
 	err := toml.Unmarshal(data, &cfg)
 	if err != nil {

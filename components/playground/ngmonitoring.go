@@ -16,7 +16,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -46,25 +45,21 @@ func (m *ngMonitoring) wait() error {
 }
 
 // the cmd is not started after return
-func newNGMonitoring(ctx context.Context, version string, host, dir string, pds []*instance.PDInstance) (*ngMonitoring, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
+func newNGMonitoring(ctx context.Context, version string, host, dir string, portOffset int, pds []*instance.PDInstance) (*ngMonitoring, error) {
+	if err := utils.MkdirAll(dir, 0755); err != nil {
 		return nil, errors.AddStack(err)
 	}
 
-	port, err := utils.GetFreePort(host, 12020)
-	if err != nil {
-		return nil, err
-	}
-
+	port := utils.MustGetFreePort(host, 12020, portOffset)
 	m := new(ngMonitoring)
 	var endpoints []string
 	for _, pd := range pds {
-		endpoints = append(endpoints, fmt.Sprintf("%s:%d", pd.Host, pd.StatusPort))
+		endpoints = append(endpoints, utils.JoinHostPort(pd.Host, pd.StatusPort))
 	}
 	args := []string{
 		fmt.Sprintf("--pd.endpoints=%s", strings.Join(endpoints, ",")),
-		fmt.Sprintf("--address=%s:%d", host, port),
-		fmt.Sprintf("--advertise-address=%s:%d", host, port),
+		fmt.Sprintf("--address=%s", utils.JoinHostPort(host, port)),
+		fmt.Sprintf("--advertise-address=%s", utils.JoinHostPort(host, port)),
 		fmt.Sprintf("--storage.path=%s", filepath.Join(dir, "data")),
 		fmt.Sprintf("--log.path=%s", filepath.Join(dir, "logs")),
 	}

@@ -44,6 +44,14 @@ func newPruneCmd() *cobra.Command {
 
 			return clearOutDatedEtcdInfo(clusterName, metadata, gOpt)
 		},
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			switch len(args) {
+			case 0:
+				return shellCompGetClusterName(cm, toComplete)
+			default:
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+		},
 	}
 
 	return cmd
@@ -68,7 +76,7 @@ func clearOutDatedEtcdInfo(clusterName string, metadata *spec.Metadata, opt oper
 	if err != nil {
 		return err
 	}
-	dmMasterClient := api.NewDMMasterClient(topo.GetMasterList(), 10*time.Second, tlsCfg)
+	dmMasterClient := api.NewDMMasterClient(topo.GetMasterListWithManageHost(), 10*time.Second, tlsCfg)
 	registeredMasters, registeredWorkers, err := dmMasterClient.GetRegisteredMembers()
 	if err != nil {
 		return err

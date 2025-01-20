@@ -19,11 +19,11 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
 	"github.com/joomcode/errorx"
-	"github.com/pingcap/errors"
 	perrs "github.com/pingcap/errors"
 	"github.com/pingcap/tiup/pkg/cluster/clusterutil"
 	"github.com/pingcap/tiup/pkg/cluster/ctxt"
@@ -78,7 +78,7 @@ func (m *Manager) Patch(name string, packagePath string, opt operator.Options, o
 	if err != nil {
 		return err
 	}
-	if err := checkPackage(m.bindVersion, m.specManager, name, insts[0].ComponentName(), insts[0].OS(), insts[0].Arch(), packagePath); err != nil {
+	if err := checkPackage(m.specManager, name, insts[0], insts[0].OS(), insts[0].Arch(), packagePath); err != nil {
 		return err
 	}
 
@@ -86,8 +86,8 @@ func (m *Manager) Patch(name string, packagePath string, opt operator.Options, o
 	for _, inst := range insts {
 		deployDir := spec.Abs(base.User, inst.DeployDir())
 		tb := task.NewBuilder(m.logger)
-		tb.BackupComponent(inst.ComponentName(), base.Version, inst.GetHost(), deployDir).
-			InstallPackage(packagePath, inst.GetHost(), deployDir)
+		tb.BackupComponent(inst.ComponentName(), base.Version, inst.GetManageHost(), deployDir).
+			InstallPackage(packagePath, inst.GetManageHost(), deployDir)
 		replacePackageTasks = append(replacePackageTasks, tb.Build())
 	}
 
@@ -104,7 +104,8 @@ func (m *Manager) Patch(name string, packagePath string, opt operator.Options, o
 			if offline {
 				return nil
 			}
-			return operator.Upgrade(ctx, topo, opt, tlsCfg)
+			// TBD: should patch be treated as an upgrade?
+			return operator.Upgrade(ctx, topo, opt, tlsCfg, base.Version, base.Version)
 		}).
 		Build()
 
@@ -139,18 +140,18 @@ func (m *Manager) Patch(name string, packagePath string, opt operator.Options, o
 	return m.specManager.SaveMeta(name, metadata)
 }
 
-func checkPackage(bindVersion spec.BindVersion, specManager *spec.SpecManager, name, comp, nodeOS, arch, packagePath string) error {
+func checkPackage(specManager *spec.SpecManager, name string, inst spec.Instance, nodeOS, arch, packagePath string) error {
 	metadata := specManager.NewMetadata()
 	if err := specManager.Metadata(name, metadata); err != nil {
 		return err
 	}
 
-	ver := bindVersion(comp, metadata.GetBaseMeta().Version)
+	ver := inst.CalculateVersion(metadata.GetBaseMeta().Version)
 	repo, err := clusterutil.NewRepository(nodeOS, arch)
 	if err != nil {
 		return err
 	}
-	entry, err := repo.ComponentBinEntry(comp, ver)
+	entry, err := repo.ComponentBinEntry(inst.ComponentSource(), ver)
 	if err != nil {
 		return err
 	}
@@ -159,33 +160,33 @@ func checkPackage(bindVersion spec.BindVersion, specManager *spec.SpecManager, n
 	if err != nil {
 		return err
 	}
-	cacheDir := specManager.Path(name, "cache", comp+"-"+checksum[:7])
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return errors.Annotatef(err, "create cache directory %s", cacheDir)
+	cacheDir := specManager.Path(name, "cache", inst.ComponentSource()+"-"+checksum[:7])
+	if err := utils.MkdirAll(cacheDir, 0755); err != nil {
+		return perrs.Annotatef(err, "create cache directory %s", cacheDir)
 	}
 	if err := exec.Command("tar", "-xvf", packagePath, "-C", cacheDir).Run(); err != nil {
-		return errors.Annotatef(err, "decompress %s", packagePath)
+		return perrs.Annotatef(err, "decompress %s", packagePath)
 	}
 
 	fi, err := os.Stat(path.Join(cacheDir, entry))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errors.Errorf("entry %s not found in package %s", entry, packagePath)
+			return perrs.Errorf("entry %s not found in package %s", entry, packagePath)
 		}
-		return errors.AddStack(err)
+		return perrs.AddStack(err)
 	}
 	if !fi.Mode().IsRegular() {
-		return errors.Errorf("entry %s in package %s is not a regular file", entry, packagePath)
+		return perrs.Errorf("entry %s in package %s is not a regular file", entry, packagePath)
 	}
 	if fi.Mode()&0500 != 0500 {
-		return errors.Errorf("entry %s in package %s is not executable", entry, packagePath)
+		return perrs.Errorf("entry %s in package %s is not executable", entry, packagePath)
 	}
 
 	return nil
 }
 
 func overwritePatch(specManager *spec.SpecManager, name, comp, packagePath string) error {
-	if err := os.MkdirAll(specManager.Path(name, spec.PatchDirName), 0755); err != nil {
+	if err := utils.MkdirAll(specManager.Path(name, spec.PatchDirName), 0755); err != nil {
 		return err
 	}
 
@@ -205,7 +206,13 @@ func overwritePatch(specManager *spec.SpecManager, name, comp, packagePath strin
 	if utils.IsSymExist(symlink) {
 		os.Remove(symlink)
 	}
-	return os.Symlink(tg, symlink)
+
+	tgRelPath, err := filepath.Rel(filepath.Dir(symlink), tg)
+	if err != nil {
+		return err
+	}
+
+	return os.Symlink(tgRelPath, symlink)
 }
 
 func instancesToPatch(topo spec.Topology, options operator.Options) ([]spec.Instance, error) {

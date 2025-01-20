@@ -23,6 +23,8 @@ import (
 	. "github.com/pingcap/check"
 	"github.com/pingcap/tiup/pkg/cluster/template/scripts"
 	"github.com/pingcap/tiup/pkg/meta"
+	"github.com/pingcap/tiup/pkg/tidbver"
+	"github.com/pingcap/tiup/pkg/utils"
 	"gopkg.in/yaml.v2"
 )
 
@@ -40,6 +42,7 @@ func (s *metaSuiteTopo) TestDefaultDataDir(c *C) {
 	topo := new(Specification)
 	topo.TiKVServers = append(topo.TiKVServers, &TiKVSpec{Host: "1.1.1.1", Port: 22})
 	topo.CDCServers = append(topo.CDCServers, &CDCSpec{Host: "2.3.3.3", Port: 22})
+	topo.TiKVCDCServers = append(topo.TiKVCDCServers, &TiKVCDCSpec{Host: "3.3.3.3", Port: 22})
 	data, err := yaml.Marshal(topo)
 	c.Assert(err, IsNil)
 
@@ -50,6 +53,7 @@ func (s *metaSuiteTopo) TestDefaultDataDir(c *C) {
 	c.Assert(topo.GlobalOptions.DataDir, Equals, "data")
 	c.Assert(topo.TiKVServers[0].DataDir, Equals, "data")
 	c.Assert(topo.CDCServers[0].DataDir, Equals, "data")
+	c.Assert(topo.TiKVCDCServers[0].DataDir, Equals, "data")
 
 	// Can keep the default value.
 	data, err = yaml.Marshal(topo)
@@ -60,6 +64,7 @@ func (s *metaSuiteTopo) TestDefaultDataDir(c *C) {
 	c.Assert(topo.GlobalOptions.DataDir, Equals, "data")
 	c.Assert(topo.TiKVServers[0].DataDir, Equals, "data")
 	c.Assert(topo.CDCServers[0].DataDir, Equals, "data")
+	c.Assert(topo.TiKVCDCServers[0].DataDir, Equals, "data")
 
 	// Test with global DataDir.
 	topo = new(Specification)
@@ -68,6 +73,8 @@ func (s *metaSuiteTopo) TestDefaultDataDir(c *C) {
 	topo.TiKVServers = append(topo.TiKVServers, &TiKVSpec{Host: "1.1.1.2", Port: 33, DataDir: "/my_data"})
 	topo.CDCServers = append(topo.CDCServers, &CDCSpec{Host: "2.3.3.3", Port: 22})
 	topo.CDCServers = append(topo.CDCServers, &CDCSpec{Host: "2.3.3.4", Port: 22, DataDir: "/cdc_data"})
+	topo.TiKVCDCServers = append(topo.TiKVCDCServers, &TiKVCDCSpec{Host: "3.3.3.3", Port: 22})
+	topo.TiKVCDCServers = append(topo.TiKVCDCServers, &TiKVCDCSpec{Host: "3.3.3.4", Port: 22, DataDir: "/tikv-cdc_data"})
 	data, err = yaml.Marshal(topo)
 	c.Assert(err, IsNil)
 
@@ -80,6 +87,9 @@ func (s *metaSuiteTopo) TestDefaultDataDir(c *C) {
 
 	c.Assert(topo.CDCServers[0].DataDir, Equals, "/global_data/cdc-22")
 	c.Assert(topo.CDCServers[1].DataDir, Equals, "/cdc_data")
+
+	c.Assert(topo.TiKVCDCServers[0].DataDir, Equals, "/global_data/tikv-cdc-22")
+	c.Assert(topo.TiKVCDCServers[1].DataDir, Equals, "/tikv-cdc_data")
 }
 
 func (s *metaSuiteTopo) TestGlobalOptions(c *C) {
@@ -99,6 +109,9 @@ pd_servers:
 cdc_servers:
   - host: 172.16.5.233
     data_dir: "cdc-data"
+kvcdc_servers:
+  - host: 172.16.5.244
+    data_dir: "tikv-cdc-data"
 `), &topo)
 	c.Assert(err, IsNil)
 	c.Assert(topo.GlobalOptions.User, Equals, "test1")
@@ -113,6 +126,10 @@ cdc_servers:
 	c.Assert(topo.CDCServers[0].SSHPort, Equals, 220)
 	c.Assert(topo.CDCServers[0].DeployDir, Equals, "test-deploy/cdc-8300")
 	c.Assert(topo.CDCServers[0].DataDir, Equals, "cdc-data")
+
+	c.Assert(topo.TiKVCDCServers[0].SSHPort, Equals, 220)
+	c.Assert(topo.TiKVCDCServers[0].DeployDir, Equals, "test-deploy/tikv-cdc-8600")
+	c.Assert(topo.TiKVCDCServers[0].DataDir, Equals, "tikv-cdc-data")
 }
 
 func (s *metaSuiteTopo) TestDataDirAbsolute(c *C) {
@@ -131,6 +148,11 @@ cdc_servers:
     data_dir: "cdc-data"
   - host: 172.16.5.234
     port: 23333
+kvcdc_servers:
+  - host: 172.16.5.244
+    data_dir: "tikv-cdc-data"
+  - host: 172.16.5.245
+    port: 33333
 `), &topo)
 	c.Assert(err, IsNil)
 
@@ -139,6 +161,9 @@ cdc_servers:
 
 	c.Assert(topo.CDCServers[0].DataDir, Equals, "cdc-data")
 	c.Assert(topo.CDCServers[1].DataDir, Equals, "/test-data/cdc-23333")
+
+	c.Assert(topo.TiKVCDCServers[0].DataDir, Equals, "tikv-cdc-data")
+	c.Assert(topo.TiKVCDCServers[1].DataDir, Equals, "/test-data/tikv-cdc-33333")
 }
 
 func (s *metaSuiteTopo) TestGlobalConfig(c *C) {
@@ -164,6 +189,8 @@ server_configs:
     status.address: 10
     port: 1230
     scheduler.max_limit: 20480
+  kvcdc:
+    gc-ttl: 43200
 
 tidb_servers:
   - host: 172.16.5.138
@@ -176,24 +203,35 @@ tidb_servers:
     config:
       latch.capacity: 5000
       log.file.rotate: "55555.xxx"
+
+kvcdc_servers:
+  - host: 172.16.5.200
+  - host: 172.16.5.201
+    port: 8601
+    config:
+      log-level: "debug"
 `), &topo)
 	c.Assert(err, IsNil)
-	c.Assert(topo.ServerConfigs.TiDB, DeepEquals, map[string]interface{}{
+	c.Assert(topo.ServerConfigs.TiDB, DeepEquals, map[string]any{
 		"status.address":  10,
 		"port":            1230,
 		"latch.capacity":  20480,
 		"log.file.rotate": "123445.xxx",
 	})
-	expected := map[string]interface{}{
-		"status": map[string]interface{}{
+	c.Assert(topo.ServerConfigs.TiKVCDC, DeepEquals, map[string]any{
+		"gc-ttl": 43200,
+	})
+
+	expected := map[string]any{
+		"status": map[string]any{
 			"address": 10,
 		},
 		"port": 1230,
-		"latch": map[string]interface{}{
+		"latch": map[string]any{
 			"capacity": 20480,
 		},
-		"log": map[string]interface{}{
-			"file": map[string]interface{}{
+		"log": map[string]any{
+			"file": map[string]any{
 				"rotate": "123445.xxx",
 			},
 		},
@@ -216,12 +254,12 @@ tidb_servers:
   address = 10
 `)
 
-	expected = map[string]interface{}{
-		"latch": map[string]interface{}{
+	expected = map[string]any{
+		"latch": map[string]any{
 			"capacity": 3000,
 		},
-		"log": map[string]interface{}{
-			"file": map[string]interface{}{
+		"log": map[string]any{
+			"file": map[string]any{
 				"rotate": "44444.xxx",
 			},
 		},
@@ -230,18 +268,32 @@ tidb_servers:
 	c.Assert(err, IsNil)
 	c.Assert(got, DeepEquals, expected)
 
-	expected = map[string]interface{}{
-		"latch": map[string]interface{}{
+	expected = map[string]any{
+		"latch": map[string]any{
 			"capacity": 5000,
 		},
-		"log": map[string]interface{}{
-			"file": map[string]interface{}{
+		"log": map[string]any{
+			"file": map[string]any{
 				"rotate": "55555.xxx",
 			},
 		},
 	}
 	got = FoldMap(topo.TiDBServers[1].Config)
 	c.Assert(err, IsNil)
+	c.Assert(got, DeepEquals, expected)
+
+	expected = map[string]any{}
+	got = FoldMap(topo.TiKVCDCServers[0].Config)
+	c.Assert(got, DeepEquals, expected)
+
+	expected = map[string]any{}
+	got = FoldMap(topo.TiKVCDCServers[0].Config)
+	c.Assert(got, DeepEquals, expected)
+
+	expected = map[string]any{
+		"log-level": "debug",
+	}
+	got = FoldMap(topo.TiKVCDCServers[1].Config)
 	c.Assert(got, DeepEquals, expected)
 }
 
@@ -260,11 +312,11 @@ tikv_servers:
 
 `), &topo)
 	c.Assert(err, IsNil)
-	expected := map[string]interface{}{
-		"config": map[string]interface{}{
+	expected := map[string]any{
+		"config": map[string]any{
 			"item1": 100,
 			"item2": 300,
-			"item3": map[string]interface{}{
+			"item3": map[string]any{
 				"item5": 500,
 				"item6": 600,
 			},
@@ -313,12 +365,19 @@ server_configs:
     config.item2: 300
     config.item3.item5: 500
     config.item3.item6: 600
+  kvcdc:
+    gc-ttl: 43200
 
 tikv_servers:
   - host: 172.16.5.138
     config:
       config.item2: 500
       config.item3.item5: 700
+
+kvcdc_servers:
+  - host: 172.16.5.238
+    config:
+      log-level: "debug"
 
 `), &topo)
 	c.Assert(err, IsNil)
@@ -336,7 +395,21 @@ item2 = 500
 item5 = 700
 item6 = 600
 `
-	got, err := merge2Toml("tikv", topo.ServerConfigs.TiKV, topo.TiKVServers[0].Config)
+	got, err := Merge2Toml("tikv", topo.ServerConfigs.TiKV, topo.TiKVServers[0].Config)
+	c.Assert(err, IsNil)
+	c.Assert(string(got), DeepEquals, expected)
+
+	expected = `# WARNING: This file is auto-generated. Do not edit! All your modification will be overwritten!
+# You can use 'tiup cluster edit-config' and 'tiup cluster reload' to update the configuration
+# All configuration items you want to change can be added to:
+# server_configs:
+#   kvcdc:
+#     aa.b1.c3: value
+#     aa.b2.c4: value
+gc-ttl = 43200
+log-level = "debug"
+`
+	got, err = Merge2Toml("kvcdc", topo.ServerConfigs.TiKVCDC, topo.TiKVCDCServers[0].Config)
 	c.Assert(err, IsNil)
 	c.Assert(string(got), DeepEquals, expected)
 }
@@ -425,7 +498,7 @@ region-schedule-limit = 2048
 replica-schedule-limit = 164
 split-merge-interval = "1h"
 `
-	got, err := merge2Toml("pd", topo.ServerConfigs.PD, topo.PDServers[1].Config)
+	got, err := Merge2Toml("pd", topo.ServerConfigs.PD, topo.PDServers[1].Config)
 	c.Assert(err, IsNil)
 	c.Assert(string(got), DeepEquals, expected)
 }
@@ -493,7 +566,7 @@ item7 = 700
 	merge1, err := mergeImported(config, spec.ServerConfigs.TiKV)
 	c.Assert(err, IsNil)
 
-	merge2, err := merge2Toml(ComponentTiKV, merge1, spec.TiKVServers[0].Config)
+	merge2, err := Merge2Toml(ComponentTiKV, merge1, spec.TiKVServers[0].Config)
 	c.Assert(err, IsNil)
 	c.Assert(string(merge2), DeepEquals, expected)
 }
@@ -585,6 +658,19 @@ pd_servers:
 	c.Assert(err, NotNil)
 }
 
+func (s *metaSuiteTopo) TestTiFlashRequiredCPUFlags(c *C) {
+	obtained := getTiFlashRequiredCPUFlagsWithVersion("v6.3.0", "AMD64")
+	c.Assert(obtained, Equals, TiFlashRequiredCPUFlags)
+	obtained = getTiFlashRequiredCPUFlagsWithVersion("v6.3.0", "X86_64")
+	c.Assert(obtained, Equals, TiFlashRequiredCPUFlags)
+	obtained = getTiFlashRequiredCPUFlagsWithVersion("nightly", "amd64")
+	c.Assert(obtained, Equals, TiFlashRequiredCPUFlags)
+	obtained = getTiFlashRequiredCPUFlagsWithVersion("v6.3.0", "aarch64")
+	c.Assert(obtained, Equals, "")
+	obtained = getTiFlashRequiredCPUFlagsWithVersion("v6.2.0", "amd64")
+	c.Assert(obtained, Equals, "")
+}
+
 func (s *metaSuiteTopo) TestTiFlashStorageSection(c *C) {
 	ctx := context.Background()
 	spec := &Specification{}
@@ -604,22 +690,19 @@ tiflash_servers:
 	// parse using clusterVersion<"v4.0.9"
 	{
 		ins := instances[0]
-		// This should be the same with tiflash_server instance's "data_dir"
-		dataDir := "/hdd0/tiflash,/hdd1/tiflash"
-		cfg := scripts.NewTiFlashScript(ins.GetHost(), "", dataDir, "", "", "")
-		conf, err := ins.(*TiFlashInstance).initTiFlashConfig(ctx, cfg, "v4.0.8", spec.ServerConfigs.TiFlash, meta.DirPaths{})
+		dataDirs := MultiDirAbs("", spec.TiFlashServers[0].DataDir)
+		conf, err := ins.(*TiFlashInstance).initTiFlashConfig(ctx, "v4.0.8", spec.ServerConfigs.TiFlash, meta.DirPaths{Deploy: spec.TiFlashServers[0].DeployDir, Data: dataDirs, Log: spec.TiFlashServers[0].LogDir})
 		c.Assert(err, IsNil)
 
 		path, ok := conf["path"]
 		c.Assert(ok, IsTrue)
-		c.Assert(path, Equals, dataDir)
+		c.Assert(path, Equals, "/ssd0/tiflash,/ssd1/tiflash")
 	}
 	// parse using clusterVersion>="v4.0.9"
 	checkWithVersion := func(ver string) {
 		ins := instances[0].(*TiFlashInstance)
-		dataDir := "/ssd0/tiflash"
-		cfg := scripts.NewTiFlashScript(ins.GetHost(), "", dataDir, "", "", "")
-		conf, err := ins.initTiFlashConfig(ctx, cfg, ver, spec.ServerConfigs.TiFlash, meta.DirPaths{})
+		dataDirs := MultiDirAbs("", spec.TiFlashServers[0].DataDir)
+		conf, err := ins.initTiFlashConfig(ctx, ver, spec.ServerConfigs.TiFlash, meta.DirPaths{Deploy: spec.TiFlashServers[0].DeployDir, Data: dataDirs, Log: spec.TiFlashServers[0].LogDir})
 		c.Assert(err, IsNil)
 
 		_, ok := conf["path"]
@@ -632,9 +715,9 @@ tiflash_servers:
 		c.Assert(ok, IsFalse)
 
 		if storageSection, ok := conf["storage"]; ok {
-			if mainSection, ok := storageSection.(map[string]interface{})["main"]; ok {
-				if mainDirsSection, ok := mainSection.(map[string]interface{})["dir"]; ok {
-					var mainDirs []interface{} = mainDirsSection.([]interface{})
+			if mainSection, ok := storageSection.(map[string]any)["main"]; ok {
+				if mainDirsSection, ok := mainSection.(map[string]any)["dir"]; ok {
+					var mainDirs []any = mainDirsSection.([]any)
 					c.Assert(len(mainDirs), Equals, 2)
 					c.Assert(mainDirs[0].(string), Equals, "/ssd0/tiflash")
 					c.Assert(mainDirs[1].(string), Equals, "/ssd1/tiflash")
@@ -644,9 +727,9 @@ tiflash_servers:
 			} else {
 				c.Error("Can not get storage.main section")
 			}
-			if latestSection, ok := storageSection.(map[string]interface{})["latest"]; ok {
-				if latestDirsSection, ok := latestSection.(map[string]interface{})["dir"]; ok {
-					var latestDirs []interface{} = latestDirsSection.([]interface{})
+			if latestSection, ok := storageSection.(map[string]any)["latest"]; ok {
+				if latestDirsSection, ok := latestSection.(map[string]any)["dir"]; ok {
+					var latestDirs []any = latestDirsSection.([]any)
 					c.Assert(len(latestDirs), Equals, 1)
 					c.Assert(latestDirs[0].(string), Equals, "/ssd0/tiflash")
 				} else {
@@ -740,8 +823,6 @@ cdc_servers:
 		"v5.1.0": {true, true, true},
 
 		"v5.0.0-rc":    {false, false, false},
-		"v5.1.0-alpha": {true, true, false},
-		"v5.2.0-alpha": {true, true, false},
 		"v6.0.0-alpha": {true, true, true},
 		"v6.1.0":       {true, true, true},
 		"v99.0.0":      {true, true, true},
@@ -749,8 +830,12 @@ cdc_servers:
 
 	checkByVersion := func(version string) {
 		ins := instances[0].(*CDCInstance)
-		cfg := scripts.NewCDCScript(ins.GetHost(), "", "", false, 0, "").
-			PatchByVersion(version, ins.DataDir())
+		cfg := &scripts.CDCScript{
+			DataDirEnabled:    tidbver.TiCDCSupportDataDir(version),
+			ConfigFileEnabled: tidbver.TiCDCSupportConfigFile(version),
+			TLSEnabled:        false,
+			DataDir:           utils.Ternary(tidbver.TiCDCSupportSortOrDataDir(version), ins.DataDir(), "").(string),
+		}
 
 		wanted := expected[version]
 
@@ -782,19 +867,18 @@ tiflash_servers:
 	// parse using clusterVersion<"v4.0.12" || == "5.0.0-rc"
 	checkBackwardCompatibility := func(ver string) {
 		ins := instances[0].(*TiFlashInstance)
-		dataDir := "/ssd0/tiflash"
-		cfg := scripts.NewTiFlashScript(ins.GetHost(), "", dataDir, "", "", "")
-		conf, err := ins.initTiFlashConfig(ctx, cfg, ver, spec.ServerConfigs.TiFlash, meta.DirPaths{})
+		dataDirs := MultiDirAbs("", spec.TiFlashServers[0].DataDir)
+		conf, err := ins.initTiFlashConfig(ctx, ver, spec.ServerConfigs.TiFlash, meta.DirPaths{Deploy: spec.TiFlashServers[0].DeployDir, Data: dataDirs, Log: spec.TiFlashServers[0].LogDir})
 		c.Assert(err, IsNil)
 
 		// We need an empty string for 'users.default.password' for backward compatibility. Or the TiFlash process will fail to start with older versions
 		if usersSection, ok := conf["users"]; !ok {
 			c.Error("Can not get users section")
 		} else {
-			if defaultUser, ok := usersSection.(map[string]interface{})["default"]; !ok {
+			if defaultUser, ok := usersSection.(map[string]any)["default"]; !ok {
 				c.Error("Can not get default users section")
 			} else {
-				var password = defaultUser.(map[string]interface{})["password"]
+				var password = defaultUser.(map[string]any)["password"]
 				c.Assert(password.(string), Equals, "")
 			}
 		}
@@ -805,9 +889,8 @@ tiflash_servers:
 	// parse using clusterVersion>="v4.0.12"
 	checkWithVersion := func(ver string) {
 		ins := instances[0].(*TiFlashInstance)
-		dataDir := "/ssd0/tiflash"
-		cfg := scripts.NewTiFlashScript(ins.GetHost(), "", dataDir, "", "", "")
-		conf, err := ins.initTiFlashConfig(ctx, cfg, ver, spec.ServerConfigs.TiFlash, meta.DirPaths{})
+		dataDirs := MultiDirAbs("", spec.TiFlashServers[0].DataDir)
+		conf, err := ins.initTiFlashConfig(ctx, ver, spec.ServerConfigs.TiFlash, meta.DirPaths{Deploy: spec.TiFlashServers[0].DeployDir, Data: dataDirs, Log: spec.TiFlashServers[0].LogDir})
 		c.Assert(err, IsNil)
 
 		// Those deprecated settings are ignored in newer versions

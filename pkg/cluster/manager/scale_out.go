@@ -121,7 +121,23 @@ func (m *Manager) ScaleOut(
 		}
 	}
 
-	if err := m.fillHost(sshConnProps, sshProxyProps, newPart, &gOpt, opt.User); err != nil {
+	var sudo bool
+	if topo.BaseTopo().GlobalOptions.SystemdMode == spec.UserMode {
+		sudo = false
+		hint := fmt.Sprintf("loginctl enable-linger %s", opt.User)
+		msg := "The value of systemd_mode is set to `user` in the topology, please note that you'll need to manually execute the following command using root or sudo on the host(s) to enable lingering for the systemd user instance.\n"
+		msg += color.GreenString(hint)
+		msg += "\nYou can read the systemd documentation for reference: https://wiki.archlinux.org/title/Systemd/User#Automatic_start-up_of_systemd_user_instances."
+		m.logger.Warnf(msg)
+		err = tui.PromptForConfirmOrAbortError("Do you want to continue? [y/N]: ")
+		if err != nil {
+			return err
+		}
+	} else {
+		sudo = opt.User != "root"
+	}
+
+	if err := m.fillHost(sshConnProps, sshProxyProps, newPart, &gOpt, opt.User, sudo); err != nil {
 		return err
 	}
 
@@ -237,7 +253,7 @@ func checkForGlobalConfigs(logger *logprinter.Logger, topoFile string, skipConfi
 		return err
 	}
 
-	var newPart map[string]interface{}
+	var newPart map[string]any
 	if err := yaml.Unmarshal(yamlFile, &newPart); err != nil {
 		return err
 	}

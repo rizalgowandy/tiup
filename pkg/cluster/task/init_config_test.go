@@ -69,17 +69,22 @@ func (i *fakeInstance) GetPort() int {
 	return 4000
 }
 
+func (i *fakeInstance) GetManageHost() string {
+	return "1.1.1.1"
+}
+
 func Test(t *testing.T) { check.TestingT(t) }
 
 var _ = check.Suite(&initConfigSuite{})
 
 func (s *initConfigSuite) TestCheckConfig(c *check.C) {
 	ctx := ctxt.New(context.Background(), 0, logprinter.NewLogger(""))
-	defer mock.With("FakeExecutor", &fakeExecutor{})()
+	mf := mock.With("FakeExecutor", &fakeExecutor{})
+	defer mf()
 
 	t := &InitConfig{
 		clusterName:    "test-cluster-name",
-		clusterVersion: "v4.0.0",
+		clusterVersion: "v6.0.0",
 		paths: meta.DirPaths{
 			Cache: "/tmp",
 		},

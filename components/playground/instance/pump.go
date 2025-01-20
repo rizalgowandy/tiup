@@ -21,7 +21,6 @@ import (
 	"strings"
 	"time"
 
-	tiupexec "github.com/pingcap/tiup/pkg/exec"
 	"github.com/pingcap/tiup/pkg/utils"
 )
 
@@ -35,14 +34,14 @@ type Pump struct {
 var _ Instance = &Pump{}
 
 // NewPump create a Pump instance.
-func NewPump(binPath string, dir, host, configPath string, id int, pds []*PDInstance) *Pump {
+func NewPump(binPath string, dir, host, configPath string, portOffset int, id int, pds []*PDInstance) *Pump {
 	pump := &Pump{
 		instance: instance{
 			BinPath:    binPath,
 			ID:         id,
 			Dir:        dir,
 			Host:       host,
-			Port:       utils.MustGetFreePort(host, 8249),
+			Port:       utils.MustGetFreePort(host, 8249, portOffset),
 			ConfigPath: configPath,
 		},
 		pds: pds,
@@ -58,7 +57,7 @@ func (p *Pump) NodeID() string {
 
 // Ready return nil when pump is ready to serve.
 func (p *Pump) Ready(ctx context.Context) error {
-	url := fmt.Sprintf("http://%s:%d/status", p.Host, p.Port)
+	url := fmt.Sprintf("http://%s/status", utils.JoinHostPort(p.Host, p.Port))
 
 	ready := func() bool {
 		resp, err := http.Get(url)
@@ -85,17 +84,17 @@ func (p *Pump) Ready(ctx context.Context) error {
 
 // Addr return the address of Pump.
 func (p *Pump) Addr() string {
-	return fmt.Sprintf("%s:%d", AdvertiseHost(p.Host), p.Port)
+	return utils.JoinHostPort(AdvertiseHost(p.Host), p.Port)
 }
 
 // Start implements Instance interface.
-func (p *Pump) Start(ctx context.Context, version utils.Version) error {
+func (p *Pump) Start(ctx context.Context) error {
 	endpoints := pdEndpoints(p.pds, true)
 
 	args := []string{
 		fmt.Sprintf("--node-id=%s", p.NodeID()),
-		fmt.Sprintf("--addr=%s:%d", p.Host, p.Port),
-		fmt.Sprintf("--advertise-addr=%s:%d", AdvertiseHost(p.Host), p.Port),
+		fmt.Sprintf("--addr=%s", utils.JoinHostPort(p.Host, p.Port)),
+		fmt.Sprintf("--advertise-addr=%s", utils.JoinHostPort(AdvertiseHost(p.Host), p.Port)),
 		fmt.Sprintf("--pd-urls=%s", strings.Join(endpoints, ",")),
 		fmt.Sprintf("--log-file=%s", p.LogFile()),
 	}
@@ -103,10 +102,6 @@ func (p *Pump) Start(ctx context.Context, version utils.Version) error {
 		args = append(args, fmt.Sprintf("--config=%s", p.ConfigPath))
 	}
 
-	var err error
-	if p.BinPath, err = tiupexec.PrepareBinary("pump", version, p.BinPath); err != nil {
-		return err
-	}
 	p.Process = &process{cmd: PrepareCommand(ctx, p.BinPath, args, nil, p.Dir)}
 
 	logIfErr(p.Process.SetOutputFile(p.LogFile()))

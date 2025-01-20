@@ -16,8 +16,10 @@ package command
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	perrs "github.com/pingcap/errors"
+	"github.com/pingcap/tiup/pkg/cluster/manager"
 	"github.com/pingcap/tiup/pkg/cluster/spec"
 	"github.com/pingcap/tiup/pkg/meta"
 	"github.com/spf13/cobra"
@@ -25,8 +27,9 @@ import (
 
 func newDisplayCmd() *cobra.Command {
 	var (
-		clusterName     string
+		dopt            manager.DisplayOption
 		showVersionOnly bool
+		statusTimeout   uint64
 	)
 	cmd := &cobra.Command{
 		Use:   "display <cluster-name>",
@@ -36,10 +39,11 @@ func newDisplayCmd() *cobra.Command {
 				return cmd.Help()
 			}
 
-			clusterName = args[0]
+			gOpt.APITimeout = statusTimeout
+			dopt.ClusterName = args[0]
 
 			if showVersionOnly {
-				metadata, err := spec.ClusterMetadata(clusterName)
+				metadata, err := spec.ClusterMetadata(dopt.ClusterName)
 				if err != nil && !errors.Is(perrs.Cause(err), meta.ErrValidate) {
 					return err
 				}
@@ -47,14 +51,34 @@ func newDisplayCmd() *cobra.Command {
 				return nil
 			}
 
-			return cm.Display(clusterName, gOpt)
+			return cm.Display(dopt, gOpt)
+		},
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			switch len(args) {
+			case 0:
+				return shellCompGetClusterName(cm, toComplete)
+			default:
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
 		},
 	}
 
 	cmd.Flags().StringSliceVarP(&gOpt.Roles, "role", "R", nil, "Only display specified roles")
 	cmd.Flags().StringSliceVarP(&gOpt.Nodes, "node", "N", nil, "Only display specified nodes")
 	cmd.Flags().BoolVar(&showVersionOnly, "version", false, "Only display DM cluster version")
-	cmd.Flags().BoolVar(&gOpt.ShowUptime, "uptime", false, "Display DM with uptime")
+	cmd.Flags().BoolVar(&dopt.ShowUptime, "uptime", false, "Display DM with uptime")
+	cmd.Flags().Uint64Var(&statusTimeout, "status-timeout", 10, "Timeout in seconds when getting node status")
 
 	return cmd
+}
+
+func shellCompGetClusterName(cm *manager.Manager, toComplete string) ([]string, cobra.ShellCompDirective) {
+	var result []string
+	clusters, _ := cm.GetClusterList()
+	for _, c := range clusters {
+		if strings.HasPrefix(c.Name, toComplete) {
+			result = append(result, c.Name)
+		}
+	}
+	return result, cobra.ShellCompDirectiveNoFileComp
 }

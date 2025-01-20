@@ -46,7 +46,7 @@ func NewBuilder(logger *logprinter.Logger) *Builder {
 func (b *Builder) RootSSH(
 	host string, port int, user, password, keyFile, passphrase string, sshTimeout, exeTimeout uint64,
 	proxyHost string, proxyPort int, proxyUser, proxyPassword, proxyKeyFile, proxyPassphrase string, proxySSHTimeout uint64,
-	sshType, defaultSSHType executor.SSHType,
+	sshType, defaultSSHType executor.SSHType, sudo bool,
 ) *Builder {
 	if sshType == "" {
 		sshType = defaultSSHType
@@ -68,6 +68,7 @@ func (b *Builder) RootSSH(
 		proxyPassphrase: proxyPassphrase,
 		proxyTimeout:    proxySSHTimeout,
 		sshType:         sshType,
+		sudo:            sudo,
 	})
 	return b
 }
@@ -142,7 +143,7 @@ func (b *Builder) ClusterSSH(
 	var tasks []Task
 	topo.IterInstance(func(inst spec.Instance) {
 		tasks = append(tasks, &UserSSH{
-			host:            inst.GetHost(),
+			host:            inst.GetManageHost(),
 			port:            inst.GetSSHPort(),
 			deployUser:      deployUser,
 			timeout:         sshTimeout,
@@ -243,25 +244,25 @@ func (b *Builder) BackupComponent(component, fromVer string, host, deployDir str
 }
 
 // InitConfig appends a CopyComponent task to the current task collection
-func (b *Builder) InitConfig(clusterName, clusterVersion string, specManager *spec.SpecManager, inst spec.Instance, deployUser string, ignoreCheck bool, paths meta.DirPaths) *Builder {
+func (b *Builder) InitConfig(clusterName, version string, specManager *spec.SpecManager, inst spec.Instance, deployUser string, ignoreCheck bool, paths meta.DirPaths) *Builder {
 	// get nightly version
 	var componentVersion utils.Version
 	meta := specManager.NewMetadata()
 
 	//  full version
-	componentVersion = utils.Version(clusterVersion)
+	componentVersion = utils.Version(version)
 	if err := specManager.Metadata(clusterName, meta); err == nil {
 		// get nightly version
-		if clusterVersion == utils.NightlyVersionAlias {
-			componentVersion, _, err = environment.GlobalEnv().V1Repository().LatestNightlyVersion(inst.ComponentName())
+		if version == utils.NightlyVersionAlias {
+			componentVersion, _, err = environment.GlobalEnv().V1Repository().LatestNightlyVersion(inst.ComponentSource())
 			if err != nil {
-				componentVersion = utils.Version(clusterVersion)
+				componentVersion = utils.Version(version)
 			}
 		}
 
 		// dm cluster does not require a full nightly version
 		if meta.GetTopology().Type() == spec.TopoTypeDM {
-			componentVersion = utils.Version(clusterVersion)
+			componentVersion = utils.Version(version)
 		}
 	}
 
@@ -292,16 +293,17 @@ func (b *Builder) ScaleConfig(clusterName, clusterVersion string, specManager *s
 }
 
 // MonitoredConfig appends a CopyComponent task to the current task collection
-func (b *Builder) MonitoredConfig(name, comp, host string, globResCtl meta.ResourceControl, options *spec.MonitoredOptions, deployUser string, tlsEnabled bool, paths meta.DirPaths) *Builder {
+func (b *Builder) MonitoredConfig(name, comp, host string, globResCtl meta.ResourceControl, options *spec.MonitoredOptions, deployUser string, tlsEnabled bool, paths meta.DirPaths, systemdMode spec.SystemdMode) *Builder {
 	b.tasks = append(b.tasks, &MonitoredConfig{
-		name:       name,
-		component:  comp,
-		host:       host,
-		globResCtl: globResCtl,
-		options:    options,
-		deployUser: deployUser,
-		tlsEnabled: tlsEnabled,
-		paths:      paths,
+		name:        name,
+		component:   comp,
+		host:        host,
+		globResCtl:  globResCtl,
+		options:     options,
+		deployUser:  deployUser,
+		tlsEnabled:  tlsEnabled,
+		paths:       paths,
+		systemdMode: systemdMode,
 	})
 	return b
 }
@@ -324,12 +326,23 @@ func (b *Builder) SSHKeySet(privKeyPath, pubKeyPath string) *Builder {
 }
 
 // EnvInit appends a EnvInit task to the current task collection
-func (b *Builder) EnvInit(host, deployUser string, userGroup string, skipCreateUser bool) *Builder {
+func (b *Builder) EnvInit(host, deployUser string, userGroup string, skipCreateUser bool, sudo bool) *Builder {
 	b.tasks = append(b.tasks, &EnvInit{
 		host:           host,
 		deployUser:     deployUser,
 		userGroup:      userGroup,
 		skipCreateUser: skipCreateUser,
+		sudo:           sudo,
+	})
+	return b
+}
+
+// RotateSSH appends a RotateSSH task to the current task collection
+func (b *Builder) RotateSSH(host, deployUser, newPublicKeyPath string) *Builder {
+	b.tasks = append(b.tasks, &RotateSSH{
+		host:             host,
+		deployUser:       deployUser,
+		newPublicKeyPath: newPublicKeyPath,
 	})
 	return b
 }
@@ -353,11 +366,12 @@ func (b *Builder) ClusterOperate(
 }
 
 // Mkdir appends a Mkdir task to the current task collection
-func (b *Builder) Mkdir(user, host string, dirs ...string) *Builder {
+func (b *Builder) Mkdir(user, host string, sudo bool, dirs ...string) *Builder {
 	b.tasks = append(b.tasks, &Mkdir{
 		user: user,
 		host: host,
 		dirs: dirs,
+		sudo: sudo,
 	})
 	return b
 }
@@ -383,35 +397,38 @@ func (b *Builder) Shell(host, command, cmdID string, sudo bool) *Builder {
 }
 
 // SystemCtl run systemctl on host
-func (b *Builder) SystemCtl(host, unit, action string, daemonReload, checkActive bool) *Builder {
+func (b *Builder) SystemCtl(host, unit, action string, daemonReload, checkActive bool, scope string) *Builder {
 	b.tasks = append(b.tasks, &SystemCtl{
 		host:         host,
 		unit:         unit,
 		action:       action,
 		daemonReload: daemonReload,
 		checkactive:  checkActive,
+		scope:        scope,
 	})
 	return b
 }
 
 // Sysctl set a kernel parameter
-func (b *Builder) Sysctl(host, key, val string) *Builder {
+func (b *Builder) Sysctl(host, key, val string, sudo bool) *Builder {
 	b.tasks = append(b.tasks, &Sysctl{
 		host: host,
 		key:  key,
 		val:  val,
+		sudo: sudo,
 	})
 	return b
 }
 
 // Limit set a system limit
-func (b *Builder) Limit(host, domain, limit, item, value string) *Builder {
+func (b *Builder) Limit(host, domain, limit, item, value string, sudo bool) *Builder {
 	b.tasks = append(b.tasks, &Limit{
 		host:   host,
 		domain: domain,
 		limit:  limit,
 		item:   item,
 		value:  value,
+		sudo:   sudo,
 	})
 	return b
 }
@@ -437,10 +454,10 @@ func (b *Builder) DeploySpark(inst spec.Instance, sparkVersion, srcPath, deployD
 		inst.Arch(),
 		sparkVersion,
 		srcPath,
-		inst.GetHost(),
+		inst.GetManageHost(),
 		deployDir,
 	).Shell( // spark is under a subdir, move it to deploy dir
-		inst.GetHost(),
+		inst.GetManageHost(),
 		fmt.Sprintf(
 			"cp -rf %[1]s %[2]s/ && cp -rf %[3]s/* %[2]s/ && rm -rf %[1]s %[3]s",
 			filepath.Join(deployDir, "bin", sparkSubPath),
@@ -455,10 +472,10 @@ func (b *Builder) DeploySpark(inst spec.Instance, sparkVersion, srcPath, deployD
 		inst.Arch(),
 		"", // use the latest stable version
 		srcPath,
-		inst.GetHost(),
+		inst.GetManageHost(),
 		deployDir,
 	).Shell( // move tispark jar to correct path
-		inst.GetHost(),
+		inst.GetManageHost(),
 		fmt.Sprintf(
 			"cp -f %[1]s/*.jar %[2]s/jars/ && rm -f %[1]s/*.jar",
 			filepath.Join(deployDir, "bin"),

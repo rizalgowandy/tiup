@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +28,8 @@ import (
 	"github.com/pingcap/tiup/pkg/cluster/spec"
 	logprinter "github.com/pingcap/tiup/pkg/logger/printer"
 	"github.com/pingcap/tiup/pkg/set"
+	"github.com/pingcap/tiup/pkg/tidbver"
+	"github.com/pingcap/tiup/pkg/utils"
 	"go.uber.org/zap"
 )
 
@@ -38,21 +39,26 @@ var (
 	increaseLimitPoint = checkpoint.Register()
 )
 
-// Upgrade the cluster.
+// Upgrade the cluster. (actually, it's rolling restart)
 func Upgrade(
 	ctx context.Context,
 	topo spec.Topology,
 	options Options,
 	tlsCfg *tls.Config,
+	currentVersion string,
+	targetVersion string,
 ) error {
 	roleFilter := set.NewStringSet(options.Roles...)
 	nodeFilter := set.NewStringSet(options.Nodes...)
-	components := topo.ComponentsByUpdateOrder()
+	components := topo.ComponentsByUpdateOrder(currentVersion)
 	components = FilterComponent(components, roleFilter)
 	logger := ctx.Value(logprinter.ContextKeyLogger).(*logprinter.Logger)
+	systemdMode := string(topo.BaseTopo().GlobalOptions.SystemdMode)
 
 	noAgentHosts := set.NewStringSet()
 	uniqueHosts := set.NewStringSet()
+
+	var cdcOpenAPIClient *api.CDCOpenAPIClient // client for cdc openapi, only used when upgrade cdc
 
 	for _, component := range components {
 		instances := FilterInstance(component.Instances(), nodeFilter)
@@ -66,6 +72,7 @@ func Upgrade(
 		var origRegionScheduleLimit int
 		var err error
 
+		var tidbClient *api.TiDBClient
 		var pdEndpoints []string
 		forcePDEndpoints := os.Getenv(EnvNamePDEndpointOverwrite) // custom set PD endpoint list
 
@@ -75,12 +82,12 @@ func Upgrade(
 				pdEndpoints = strings.Split(forcePDEndpoints, ",")
 				logger.Warnf("%s is set, using %s as PD endpoints", EnvNamePDEndpointOverwrite, pdEndpoints)
 			} else {
-				pdEndpoints = topo.(*spec.Specification).GetPDList()
+				pdEndpoints = topo.(*spec.Specification).GetPDListWithManageHost()
 			}
 			pdClient := api.NewPDClient(ctx, pdEndpoints, 10*time.Second, tlsCfg)
 			origLeaderScheduleLimit, origRegionScheduleLimit, err = increaseScheduleLimit(ctx, pdClient)
 			if err != nil {
-				// the config modifing error should be able to be safely ignored, as it will
+				// the config modifying error should be able to be safely ignored, as it will
 				// be processed with current settings anyway.
 				logger.Warnf("failed increasing schedule limit: %s, ignore", err)
 			} else {
@@ -96,6 +103,21 @@ func Upgrade(
 					}
 				}()
 			}
+		case spec.ComponentTiDB:
+			dbs := topo.(*spec.Specification).TiDBServers
+			endpoints := []string{}
+			for _, db := range dbs {
+				endpoints = append(endpoints, utils.JoinHostPort(db.GetManageHost(), db.StatusPort))
+			}
+
+			if currentVersion != targetVersion && tidbver.TiDBSupportUpgradeAPI(currentVersion) && tidbver.TiDBSupportUpgradeAPI(targetVersion) {
+				tidbClient = api.NewTiDBClient(ctx, endpoints, 10*time.Second, tlsCfg)
+				err = tidbClient.StartUpgrade()
+				if err != nil {
+					return err
+				}
+			}
+
 		default:
 			// do nothing, kept for future usage with other components
 		}
@@ -105,20 +127,59 @@ func Upgrade(
 
 		for _, instance := range instances {
 			// monitors
-			uniqueHosts.Insert(instance.GetHost())
+			uniqueHosts.Insert(instance.GetManageHost())
 			if instance.IgnoreMonitorAgent() {
-				noAgentHosts.Insert(instance.GetHost())
+				noAgentHosts.Insert(instance.GetManageHost())
 			}
+
+			// Usage within the switch statement
 			switch component.Name() {
-			case spec.ComponentPD:
-				// defer PD leader to be upgraded after others
-				isLeader, err := instance.(*spec.PDInstance).IsLeader(ctx, topo, int(options.APITimeout), tlsCfg)
+			case spec.ComponentPD, spec.ComponentTSO, spec.ComponentScheduling:
+				// defer PD related leader/primary to be upgraded after others
+				isLeader, err := checkAndDeferPDLeader(ctx, topo, int(options.APITimeout), tlsCfg, instance)
 				if err != nil {
+					logger.Warnf("cannot found pd related leader/primary, ignore: %s, instance: %s", err, instance.ID())
 					return err
 				}
 				if isLeader {
 					deferInstances = append(deferInstances, instance)
-					logger.Debugf("Defferred upgrading of PD leader %s", instance.ID())
+					logger.Debugf("Upgrading deferred instance %s...", instance.ID())
+					continue
+				}
+			case spec.ComponentCDC:
+				ins := instance.(*spec.CDCInstance)
+				address := ins.GetAddr()
+				if !tidbver.TiCDCSupportRollingUpgrade(currentVersion) {
+					logger.Debugf("rolling upgrade cdc not supported, upgrade by force, "+
+						"addr: %s, version: %s", address, currentVersion)
+					options.Force = true
+					if err := upgradeInstance(ctx, topo, instance, options, tlsCfg); err != nil {
+						options.Force = false
+						return err
+					}
+					options.Force = false
+					continue
+				}
+
+				// during the upgrade process, endpoint addresses should not change, so only new the client once.
+				if cdcOpenAPIClient == nil {
+					cdcOpenAPIClient = api.NewCDCOpenAPIClient(ctx, topo.(*spec.Specification).GetCDCListWithManageHost(), 5*time.Second, tlsCfg)
+				}
+
+				capture, err := cdcOpenAPIClient.GetCaptureByAddr(address)
+				if err != nil {
+					// After the previous status check, we know that the cdc instance should be `Up`, but know it cannot be found by address
+					// perhaps since the specified version of cdc does not support open api, or the instance just crashed right away
+					logger.Debugf("upgrade cdc, cannot found the capture by address: %s", address)
+					if err := upgradeInstance(ctx, topo, instance, options, tlsCfg); err != nil {
+						return err
+					}
+					continue
+				}
+
+				if capture.IsOwner {
+					deferInstances = append(deferInstances, instance)
+					logger.Debugf("Deferred upgrading of TiCDC owner %s, captureID: %s, addr: %s", instance.ID(), capture.ID, address)
 					continue
 				}
 			default:
@@ -130,12 +191,25 @@ func Upgrade(
 			}
 		}
 
-		// process defferred instances
+		// process deferred instances
 		for _, instance := range deferInstances {
-			logger.Debugf("Upgrading defferred instance %s...", instance.ID())
+			logger.Debugf("Upgrading deferred instance %s...", instance.ID())
 			if err := upgradeInstance(ctx, topo, instance, options, tlsCfg); err != nil {
 				return err
 			}
+		}
+
+		switch component.Name() {
+		case spec.ComponentTiDB:
+			if currentVersion != targetVersion && tidbver.TiDBSupportUpgradeAPI(currentVersion) && tidbver.TiDBSupportUpgradeAPI(targetVersion) {
+				err = tidbClient.FinishUpgrade()
+				if err != nil {
+					return err
+				}
+			}
+
+		default:
+			// do nothing, kept for future usage with other components
 		}
 	}
 
@@ -143,12 +217,34 @@ func Upgrade(
 		return nil
 	}
 
-	return RestartMonitored(ctx, uniqueHosts.Slice(), noAgentHosts, topo.GetMonitoredOptions(), options.OptTimeout)
+	return RestartMonitored(ctx, uniqueHosts.Slice(), noAgentHosts, topo.GetMonitoredOptions(), options.OptTimeout, systemdMode)
 }
 
-func upgradeInstance(ctx context.Context, topo spec.Topology, instance spec.Instance, options Options, tlsCfg *tls.Config) (err error) {
+// checkAndDeferPDLeader checks the PD related leader/primary instance's status and defers its upgrade if necessary.
+func checkAndDeferPDLeader(ctx context.Context, topo spec.Topology, apiTimeout int, tlsCfg *tls.Config, instance spec.Instance) (isLeader bool, err error) {
+	switch instance.ComponentName() {
+	case spec.ComponentPD:
+		isLeader, err = instance.(*spec.PDInstance).IsLeader(ctx, topo, apiTimeout, tlsCfg)
+	case spec.ComponentScheduling:
+		isLeader, err = instance.(*spec.SchedulingInstance).IsPrimary(ctx, topo, tlsCfg)
+	case spec.ComponentTSO:
+		isLeader, err = instance.(*spec.TSOInstance).IsPrimary(ctx, topo, tlsCfg)
+	}
+	if err != nil {
+		return false, err
+	}
+	return isLeader, nil
+}
+
+func upgradeInstance(
+	ctx context.Context,
+	topo spec.Topology,
+	instance spec.Instance,
+	options Options,
+	tlsCfg *tls.Config,
+) (err error) {
 	// insert checkpoint
-	point := checkpoint.Acquire(ctx, upgradePoint, map[string]interface{}{"instance": instance.ID()})
+	point := checkpoint.Acquire(ctx, upgradePoint, map[string]any{"instance": instance.ID()})
 	defer func() {
 		point.Release(err, zap.String("instance", instance.ID()))
 	}()
@@ -164,14 +260,19 @@ func upgradeInstance(ctx context.Context, topo spec.Topology, instance spec.Inst
 		rollingInstance, isRollingInstance = instance.(spec.RollingUpdateInstance)
 	}
 
+	err = executeSSHCommand(ctx, "Executing pre-upgrade command", instance.GetManageHost(), options.SSHCustomScripts.BeforeRestartInstance.Command())
+	if err != nil {
+		return err
+	}
+
 	if isRollingInstance {
 		err := rollingInstance.PreRestart(ctx, topo, int(options.APITimeout), tlsCfg)
 		if err != nil && !options.Force {
 			return err
 		}
 	}
-
-	if err := restartInstance(ctx, instance, options.OptTimeout, tlsCfg); err != nil && !options.Force {
+	systemdMode := string(topo.BaseTopo().GlobalOptions.SystemdMode)
+	if err := restartInstance(ctx, instance, options.OptTimeout, tlsCfg, systemdMode); err != nil && !options.Force {
 		return err
 	}
 
@@ -182,6 +283,11 @@ func upgradeInstance(ctx context.Context, topo spec.Topology, instance spec.Inst
 		}
 	}
 
+	err = executeSSHCommand(ctx, "Executing post-upgrade command", instance.GetManageHost(), options.SSHCustomScripts.AfterRestartInstance.Command())
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -190,7 +296,8 @@ func Addr(ins spec.Instance) string {
 	if ins.GetPort() == 0 || ins.GetPort() == 80 {
 		panic(ins)
 	}
-	return ins.GetHost() + ":" + strconv.Itoa(ins.GetPort())
+
+	return utils.JoinHostPort(ins.GetManageHost(), ins.GetPort())
 }
 
 var (
@@ -209,7 +316,7 @@ func increaseScheduleLimit(ctx context.Context, pc *api.PDClient) (
 	currRegionScheduleLimit int,
 	err error) {
 	// insert checkpoint
-	point := checkpoint.Acquire(ctx, increaseLimitPoint, map[string]interface{}{})
+	point := checkpoint.Acquire(ctx, increaseLimitPoint, map[string]any{})
 	defer func() {
 		point.Release(err,
 			zap.Int("currLeaderScheduleLimit", currLeaderScheduleLimit),

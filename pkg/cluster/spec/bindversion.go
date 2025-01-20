@@ -18,23 +18,6 @@ import (
 	"strings"
 )
 
-// TiDBComponentVersion maps the TiDB version to the third components binding version
-// Empty version should be treate as the the last stable one
-func TiDBComponentVersion(comp, version string) string {
-	switch comp {
-	case ComponentAlertmanager,
-		ComponentBlackboxExporter,
-		ComponentNodeExporter,
-		ComponentPushwaygate,
-		ComponentCheckCollector,
-		ComponentSpark,
-		ComponentTiSpark:
-		return ""
-	default:
-		return version
-	}
-}
-
 // ComponentSubDir maps a component with version to a subdir if needed
 func ComponentSubDir(comp, version string) string {
 	if comp == ComponentSpark {

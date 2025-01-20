@@ -19,9 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	tiupexec "github.com/pingcap/tiup/pkg/exec"
+	"github.com/pingcap/tiup/pkg/tidbver"
 	"github.com/pingcap/tiup/pkg/utils"
-	"golang.org/x/mod/semver"
 )
 
 // TiCDC represent a ticdc instance.
@@ -34,14 +33,17 @@ type TiCDC struct {
 var _ Instance = &TiCDC{}
 
 // NewTiCDC create a TiCDC instance.
-func NewTiCDC(binPath string, dir, host, configPath string, id int, pds []*PDInstance) *TiCDC {
+func NewTiCDC(binPath string, dir, host, configPath string, portOffset int, id int, port int, pds []*PDInstance) *TiCDC {
+	if port <= 0 {
+		port = 8300
+	}
 	ticdc := &TiCDC{
 		instance: instance{
 			BinPath:    binPath,
 			ID:         id,
 			Dir:        dir,
 			Host:       host,
-			Port:       utils.MustGetFreePort(host, 8300),
+			Port:       utils.MustGetFreePort(host, port, portOffset),
 			ConfigPath: configPath,
 		},
 		pds: pds,
@@ -51,30 +53,28 @@ func NewTiCDC(binPath string, dir, host, configPath string, id int, pds []*PDIns
 }
 
 // Start implements Instance interface.
-func (c *TiCDC) Start(ctx context.Context, version utils.Version) error {
+func (c *TiCDC) Start(ctx context.Context) error {
 	endpoints := pdEndpoints(c.pds, true)
 
 	args := []string{
 		"server",
-		fmt.Sprintf("--addr=%s:%d", c.Host, c.Port),
-		fmt.Sprintf("--advertise-addr=%s:%d", AdvertiseHost(c.Host), c.Port),
+		fmt.Sprintf("--addr=%s", utils.JoinHostPort(c.Host, c.Port)),
+		fmt.Sprintf("--advertise-addr=%s", utils.JoinHostPort(AdvertiseHost(c.Host), c.Port)),
 		fmt.Sprintf("--pd=%s", strings.Join(endpoints, ",")),
 		fmt.Sprintf("--log-file=%s", c.LogFile()),
 	}
-	clusterVersion := string(version)
-	if semver.Compare(clusterVersion, "v4.0.13") >= 0 {
-		if (semver.Major(clusterVersion) == "v4" && semver.Compare(clusterVersion, "v4.0.14") >= 0) ||
-			(semver.Major(clusterVersion) == "v5" && semver.Compare(clusterVersion, "v5.0.3") >= 0) {
+	clusterVersion := string(c.Version)
+	if tidbver.TiCDCSupportConfigFile(clusterVersion) {
+		if c.ConfigPath != "" {
+			args = append(args, fmt.Sprintf("--config=%s", c.ConfigPath))
+		}
+		if tidbver.TiCDCSupportDataDir(clusterVersion) {
 			args = append(args, fmt.Sprintf("--data-dir=%s", filepath.Join(c.Dir, "data")))
 		} else {
 			args = append(args, fmt.Sprintf("--sort-dir=%s/tmp/sorter", filepath.Join(c.Dir, "data")))
 		}
 	}
 
-	var err error
-	if c.BinPath, err = tiupexec.PrepareBinary("cdc", version, c.BinPath); err != nil {
-		return err
-	}
 	c.Process = &process{cmd: PrepareCommand(ctx, c.BinPath, args, nil, c.Dir)}
 
 	logIfErr(c.Process.SetOutputFile(c.LogFile()))

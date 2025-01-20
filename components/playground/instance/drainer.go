@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	tiupexec "github.com/pingcap/tiup/pkg/exec"
 	"github.com/pingcap/tiup/pkg/utils"
 )
 
@@ -33,14 +32,14 @@ type Drainer struct {
 var _ Instance = &Drainer{}
 
 // NewDrainer create a Drainer instance.
-func NewDrainer(binPath string, dir, host, configPath string, id int, pds []*PDInstance) *Drainer {
+func NewDrainer(binPath string, dir, host, configPath string, portOffset int, id int, pds []*PDInstance) *Drainer {
 	d := &Drainer{
 		instance: instance{
 			BinPath:    binPath,
 			ID:         id,
 			Dir:        dir,
 			Host:       host,
-			Port:       utils.MustGetFreePort(host, 8250),
+			Port:       utils.MustGetFreePort(host, 8250, portOffset),
 			ConfigPath: configPath,
 		},
 		pds: pds,
@@ -61,7 +60,7 @@ func (d *Drainer) LogFile() string {
 
 // Addr return the address of Drainer.
 func (d *Drainer) Addr() string {
-	return fmt.Sprintf("%s:%d", AdvertiseHost(d.Host), d.Port)
+	return utils.JoinHostPort(AdvertiseHost(d.Host), d.Port)
 }
 
 // NodeID return the node id of drainer.
@@ -70,13 +69,13 @@ func (d *Drainer) NodeID() string {
 }
 
 // Start implements Instance interface.
-func (d *Drainer) Start(ctx context.Context, version utils.Version) error {
+func (d *Drainer) Start(ctx context.Context) error {
 	endpoints := pdEndpoints(d.pds, true)
 
 	args := []string{
 		fmt.Sprintf("--node-id=%s", d.NodeID()),
-		fmt.Sprintf("--addr=%s:%d", d.Host, d.Port),
-		fmt.Sprintf("--advertise-addr=%s:%d", AdvertiseHost(d.Host), d.Port),
+		fmt.Sprintf("--addr=%s", utils.JoinHostPort(d.Host, d.Port)),
+		fmt.Sprintf("--advertise-addr=%s", utils.JoinHostPort(AdvertiseHost(d.Host), d.Port)),
 		fmt.Sprintf("--pd-urls=%s", strings.Join(endpoints, ",")),
 		fmt.Sprintf("--log-file=%s", d.LogFile()),
 	}
@@ -84,10 +83,6 @@ func (d *Drainer) Start(ctx context.Context, version utils.Version) error {
 		args = append(args, fmt.Sprintf("--config=%s", d.ConfigPath))
 	}
 
-	var err error
-	if d.BinPath, err = tiupexec.PrepareBinary("drainer", version, d.BinPath); err != nil {
-		return err
-	}
 	d.Process = &process{cmd: PrepareCommand(ctx, d.BinPath, args, nil, d.Dir)}
 
 	logIfErr(d.Process.SetOutputFile(d.LogFile()))

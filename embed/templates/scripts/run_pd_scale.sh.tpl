@@ -7,28 +7,22 @@ DEPLOY_DIR={{.DeployDir}}
 
 cd "${DEPLOY_DIR}" || exit 1
 
-{{- define "PDList"}}
-  {{- range $idx, $pd := .}}
-    {{- if eq $idx 0}}
-      {{- $pd.AdvertiseClientAddr}}
-    {{- else -}}
-      ,{{- $pd.AdvertiseClientAddr}}
-    {{- end}}
-  {{- end}}
-{{- end}}
-
+exec \
 {{- if .NumaNode}}
-exec numactl --cpunodebind={{.NumaNode}} --membind={{.NumaNode}} bin/pd-server \
-{{- else}}
-exec bin/pd-server \
+    numactl --cpunodebind={{.NumaNode}} --membind={{.NumaNode}} \
 {{- end}}
+    env GODEBUG=madvdontneed=1 \
+{{- if .MSMode}}
+    PD_SERVICE_MODE=api \
+{{- end}}
+    bin/pd-server \
     --name="{{.Name}}" \
-    --client-urls="{{.Scheme}}://{{.ListenHost}}:{{.ClientPort}}" \
-    --advertise-client-urls="{{.AdvertiseClientAddr}}" \
-    --peer-urls="{{.Scheme}}://{{.ListenHost}}:{{.PeerPort}}" \
-    --advertise-peer-urls="{{.AdvertisePeerAddr}}" \
+    --client-urls="{{.ClientURL}}" \
+    --advertise-client-urls="{{.AdvertiseClientURL}}" \
+    --peer-urls="{{.PeerURL}}" \
+    --advertise-peer-urls="{{.AdvertisePeerURL}}" \
     --data-dir="{{.DataDir}}" \
-    --join="{{template "PDList" .Endpoints}}" \
+    --join="{{.Join}}" \
     --config=conf/pd.toml \
     --log-file="{{.LogDir}}/pd.log" 2>> "{{.LogDir}}/pd_stderr.log"
   

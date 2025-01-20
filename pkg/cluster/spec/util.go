@@ -124,8 +124,12 @@ func LoadClientCert(dir string) (*tls.Config, error) {
 }
 
 // statusByHost queries current status of the instance by http status api.
-func statusByHost(host string, port int, path string, tlsCfg *tls.Config) string {
-	client := utils.NewHTTPClient(statusQueryTimeout, tlsCfg)
+func statusByHost(host string, port int, path string, timeout time.Duration, tlsCfg *tls.Config) string {
+	if timeout < time.Second {
+		timeout = statusQueryTimeout
+	}
+
+	client := utils.NewHTTPClient(timeout, tlsCfg)
 
 	scheme := "http"
 	if tlsCfg != nil {
@@ -134,7 +138,7 @@ func statusByHost(host string, port int, path string, tlsCfg *tls.Config) string
 	if path == "" {
 		path = "/"
 	}
-	url := fmt.Sprintf("%s://%s:%d%s", scheme, host, port, path)
+	url := fmt.Sprintf("%s://%s%s", scheme, utils.JoinHostPort(host, port), path)
 
 	// body doesn't have any status section needed
 	body, err := client.Get(context.TODO(), url)
@@ -145,14 +149,18 @@ func statusByHost(host string, port int, path string, tlsCfg *tls.Config) string
 }
 
 // UptimeByHost queries current uptime of the instance by http Prometheus metric api.
-func UptimeByHost(host string, port int, tlsCfg *tls.Config) time.Duration {
+func UptimeByHost(host string, port int, timeout time.Duration, tlsCfg *tls.Config) time.Duration {
+	if timeout < time.Second {
+		timeout = statusQueryTimeout
+	}
+
 	scheme := "http"
 	if tlsCfg != nil {
 		scheme = "https"
 	}
-	url := fmt.Sprintf("%s://%s:%d/metrics", scheme, host, port)
+	url := fmt.Sprintf("%s://%s/metrics", scheme, utils.JoinHostPort(host, port))
 
-	client := utils.NewHTTPClient(statusQueryTimeout, tlsCfg)
+	client := utils.NewHTTPClient(timeout, tlsCfg)
 
 	body, err := client.Get(context.TODO(), url)
 	if err != nil || body == nil {
@@ -209,4 +217,17 @@ func MultiDirAbs(user, paths string) []string {
 func PackagePath(comp string, version string, os string, arch string) string {
 	fileName := fmt.Sprintf("%s-%s-%s-%s.tar.gz", comp, version, os, arch)
 	return ProfilePath(TiUPPackageCacheDir, fileName)
+}
+
+// GetDMMasterPackageName return package name of the first DMMaster instance
+func GetDMMasterPackageName(topo Topology) string {
+	for _, c := range topo.ComponentsByStartOrder() {
+		if c.Name() == ComponentDMMaster {
+			instances := c.Instances()
+			if len(instances) > 0 {
+				return instances[0].ComponentSource()
+			}
+		}
+	}
+	return ComponentDMMaster
 }

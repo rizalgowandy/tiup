@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -106,7 +107,7 @@ func (pc *PDClient) tryIdentifyVersion() {
 	}
 }
 
-// GetURL builds the the client URL of PDClient
+// GetURL builds the client URL of PDClient
 func (pc *PDClient) GetURL(addr string) string {
 	httpPrefix := "http"
 	if pc.tlsEnabled {
@@ -137,7 +138,10 @@ var (
 	pdStoreURI           = "pd/api/v1/store"
 	pdStoresURI          = "pd/api/v1/stores"
 	pdStoresLimitURI     = "pd/api/v1/stores/limit"
+	pdRemoveTombstone    = "pd/api/v1/stores/remove-tombstone"
 	pdRegionsCheckURI    = "pd/api/v1/regions/check"
+	pdServicePrimaryURI  = "pd/api/v2/ms/primary"
+	tsoHealthPrefix      = "tso/api/v1/health"
 )
 
 func tryURLs(endpoints []string, f func(endpoint string) ([]byte, error)) ([]byte, error) {
@@ -192,6 +196,32 @@ func (pc *PDClient) CheckHealth() error {
 
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// CheckTSOHealth checks the health of TSO service(which is a microservice component of PD)
+func (pc *PDClient) CheckTSOHealth(retryOpt *utils.RetryOption) error {
+	endpoints := pc.getEndpoints(tsoHealthPrefix)
+
+	if err := utils.Retry(func() error {
+		var err error
+		for _, endpoint := range endpoints {
+			_, err = pc.httpClient.Get(pc.ctx, endpoint)
+			if err != nil {
+				return err
+			}
+		}
+		if err == nil {
+			return nil
+		}
+
+		// return error by default, to make the retry work
+		pc.l().Debugf("Still waiting for the PD microservice's TSO health")
+		return perrs.New("Still waiting for the PD microservice's TSO health")
+	}, *retryOpt); err != nil {
+		return fmt.Errorf("error check PD microservice's TSO health, %v", err)
 	}
 
 	return nil
@@ -284,8 +314,8 @@ func (pc *PDClient) WaitLeader(retryOpt *utils.RetryOption) error {
 		}
 
 		// return error by default, to make the retry work
-		pc.l().Debugf("Still waitting for the PD leader to be elected")
-		return perrs.New("still waitting for the PD leader to be elected")
+		pc.l().Debugf("Still waiting for the PD leader to be elected")
+		return perrs.New("still waiting for the PD leader to be elected")
 	}, *retryOpt); err != nil {
 		return fmt.Errorf("error getting PD leader, %v", err)
 	}
@@ -336,12 +366,12 @@ func (pc *PDClient) GetMembers() (*pdpb.GetMembersResponse, error) {
 }
 
 // GetConfig returns all PD configs
-func (pc *PDClient) GetConfig() (map[string]interface{}, error) {
+func (pc *PDClient) GetConfig() (map[string]any, error) {
 	endpoints := pc.getEndpoints(pdConfigURI)
 
 	// We don't use the `github.com/tikv/pd/server/config` directly because
 	// there is compatible issue: https://github.com/pingcap/tiup/issues/637
-	pdConfig := map[string]interface{}{}
+	pdConfig := map[string]any{}
 
 	_, err := tryURLs(endpoints, func(endpoint string) ([]byte, error) {
 		body, err := pc.httpClient.Get(pc.ctx, endpoint)
@@ -361,7 +391,7 @@ func (pc *PDClient) GetConfig() (map[string]interface{}, error) {
 // GetClusterID return cluster ID
 func (pc *PDClient) GetClusterID() (uint64, error) {
 	endpoints := pc.getEndpoints(pdClusterIDURI)
-	var clusterID map[string]interface{}
+	var clusterID map[string]any
 
 	_, err := tryURLs(endpoints, func(endpoint string) ([]byte, error) {
 		body, err := pc.httpClient.Get(pc.ctx, endpoint)
@@ -370,7 +400,7 @@ func (pc *PDClient) GetClusterID() (uint64, error) {
 		}
 		d := json.NewDecoder(bytes.NewBuffer(body))
 		d.UseNumber()
-		clusterID = make(map[string]interface{})
+		clusterID = make(map[string]any)
 		return nil, d.Decode(&clusterID)
 	})
 	if err != nil {
@@ -443,8 +473,8 @@ func (pc *PDClient) EvictPDLeader(retryOpt *utils.RetryOption) error {
 		}
 
 		// return error by default, to make the retry work
-		pc.l().Debugf("Still waitting for the PD leader to transfer")
-		return perrs.New("still waitting for the PD leader to transfer")
+		pc.l().Debugf("Still waiting for the PD leader to transfer")
+		return perrs.New("still waiting for the PD leader to transfer")
 	}, *retryOpt); err != nil {
 		return fmt.Errorf("error evicting PD leader, %v", err)
 	}
@@ -523,7 +553,7 @@ func (pc *PDClient) EvictStoreLeader(host string, retryOpt *utils.RetryOption, c
 			return nil
 		}
 		pc.l().Infof(
-			"\t  Still waitting for %d store leaders to transfer...",
+			"\t  Still waiting for %d store leaders to transfer...",
 			leaderCount,
 		)
 
@@ -531,6 +561,116 @@ func (pc *PDClient) EvictStoreLeader(host string, retryOpt *utils.RetryOption, c
 		return perrs.New("still waiting for the store leaders to transfer")
 	}, *retryOpt); err != nil {
 		return fmt.Errorf("error evicting store leader from %s, %v", host, err)
+	}
+	return nil
+}
+
+// RecoverStoreLeader waits for some leaders to transfer back.
+//
+// Currently, recoverStoreLeader will be considered as succeed in any of the following case
+//
+//  1. 2/3 of leaders are already transferred back.
+//
+//  2. Original leader count is less than 200.
+//     Though the accurate threshold is 57, it can be set to a larger value, for example 200.
+//     Moreover, clusters which have small number of leaders are supposed to has low pressure,
+//     and this recovering strategy may be unnecessary for them. Clusters in production env
+//     usually has thousands of leaders.
+//
+//     Since PD considers it as balance when the leader count delta is less than 10, so
+//     these two conditions should be taken into consideration
+//
+//     - When the original leader count is less than 20, there is possibility that
+//     no leader will transfer back.
+//     For example: The target store's leader count is 19. Other stores' leader count are 9.
+//     There are 20 stores in total. In this case, there may be no leader to transfer back.
+//
+//     - When the leader count is less than 57, there is possibility that only less than 2/3
+//     leaders are transferred back. `(N-10-9 >= 2/3*N) -> (N>=57)`.
+//     For example: The target store's leader count is 56. Other stores' leader count are 46.
+//     There are 57 stores in total. In this case, there may be only 37 leaders to transfer back,
+//     and 37/56 < 2/3. Accordingly, if the target store's leader count is 57, then there may be
+//     38 leaders to transfer back, and 38/57 == 2/3.
+//
+//  3. The leader count has been unchanged for 5 times.
+func (pc *PDClient) RecoverStoreLeader(host string, originalCount int, retryOpt *utils.RetryOption, countLeader func(string) (int, error)) error {
+	// When the leader count is less than certain number, just ignore recovering.
+	if originalCount < 200 {
+		return nil
+	}
+
+	targetCount := originalCount * 2 / 3
+	// The default leadership transfer timeout for one region is 10s,
+	// so set the default value to about 10s (5*2s=10s).
+	// NOTE: PD may not transfer leader to a newly started store in the future,
+	// (check https://github.com/tikv/pd/pull/4762 for details),
+	// so this strategy should also be enhanced later.
+	maxUnchangedTimes := 5
+
+	// Get info of current stores.
+	latestStore, err := pc.GetCurrentStore(host)
+	if err != nil {
+		if errors.Is(err, ErrNoStore) {
+			return nil
+		}
+		return err
+	}
+
+	pc.l().Infof("\tRecovering about %d leaders to store %s, original count is %d...", targetCount, latestStore.Store.Address, originalCount)
+
+	// Wait for the transfer to complete.
+	if retryOpt == nil {
+		retryOpt = &utils.RetryOption{
+			// The default timeout of evicting leader is 600s, so set the recovering timeout to
+			// 2/3 of it should be reasonable. Besides, One local test shows it takes about
+			// 30s to recover 3.6k leaders.
+			Timeout: time.Second * 400,
+			Delay:   time.Second * 2,
+		}
+	}
+
+	lastLeaderCount := math.MaxInt
+	curUnchangedTimes := 0
+	if err := utils.Retry(func() error {
+		currStore, err := pc.GetCurrentStore(host)
+		if err != nil {
+			if errors.Is(err, ErrNoStore) {
+				return nil
+			}
+			return err
+		}
+
+		curLeaderCount, err := countLeader(currStore.Store.Address)
+		if err != nil {
+			return err
+		}
+
+		// Target number of leaders have been transferred back.
+		if curLeaderCount >= targetCount {
+			return nil
+		}
+
+		// Check if the leader count has been unchanged for certain times.
+		if lastLeaderCount == curLeaderCount {
+			curUnchangedTimes += 1
+			if curUnchangedTimes >= maxUnchangedTimes {
+				pc.l().Warnf("\tSkip recovering leaders to %s, because leader count has been unchanged for %d times", host, maxUnchangedTimes)
+				return nil
+			}
+		} else {
+			lastLeaderCount = curLeaderCount
+			curUnchangedTimes = 0
+		}
+
+		pc.l().Infof(
+			"\t  Still waiting for at least %d leaders to transfer back...",
+			targetCount-curLeaderCount,
+		)
+
+		// Return error by default, to make the retry work.
+		return perrs.New("still waiting for the store leaders to transfer back")
+	}, *retryOpt); err != nil {
+		return fmt.Errorf("error recovering store leader to %s, %v", host, err)
 	}
 	return nil
 }
@@ -621,7 +761,7 @@ func (pc *PDClient) DelPD(name string, retryOpt *utils.RetryOption) error {
 		// check if the deleted member still present
 		for _, member := range currMembers.Members {
 			if member.Name == name {
-				return perrs.New("still waitting for the PD node to be deleted")
+				return perrs.New("still waiting for the PD node to be deleted")
 			}
 		}
 
@@ -728,6 +868,16 @@ func (pc *PDClient) DelStore(host string, retryOpt *utils.RetryOption) error {
 	return nil
 }
 
+// RemoveTombstone remove tombstone instance
+func (pc *PDClient) RemoveTombstone() error {
+	endpoints := pc.getEndpoints(pdRemoveTombstone)
+	_, err := tryURLs(endpoints, func(endpoint string) ([]byte, error) {
+		_, _, err := pc.httpClient.Delete(pc.ctx, endpoint, nil)
+		return nil, err
+	})
+	return err
+}
+
 func (pc *PDClient) updateConfig(url string, body io.Reader) error {
 	endpoints := pc.getEndpoints(url)
 	_, err := tryURLs(endpoints, func(endpoint string) ([]byte, error) {
@@ -778,6 +928,7 @@ func (pc *PDClient) GetTiKVLabels() (map[string]map[string]string, []map[string]
 	for _, s := range r.Stores {
 		if s.Store.State == metapb.StoreState_Up {
 			lbs := s.Store.GetLabels()
+			host, port := utils.ParseHostPort(s.Store.GetAddress())
 			labelsMap := map[string]string{}
 
 			var labelsArr []string
@@ -794,9 +945,9 @@ func (pc *PDClient) GetTiKVLabels() (map[string]map[string]string, []map[string]
 
 			label := fmt.Sprintf("%s%s%s", "{", strings.Join(labelsArr, ","), "}")
 			storeInfo = append(storeInfo, map[string]LabelInfo{
-				strings.Split(s.Store.GetAddress(), ":")[0]: {
-					Machine:   strings.Split(s.Store.GetAddress(), ":")[0],
-					Port:      strings.Split(s.Store.GetAddress(), ":")[1],
+				host: {
+					Machine:   host,
+					Port:      port,
 					Store:     s.Store.GetId(),
 					Status:    s.Store.State.String(),
 					Leaders:   s.Status.LeaderCount,
@@ -841,7 +992,7 @@ func (pc *PDClient) SetReplicationConfig(key string, value int) error {
 		return nil
 	}
 
-	data := map[string]interface{}{"set": map[string]interface{}{key: value}}
+	data := map[string]any{"set": map[string]any{key: value}}
 	body, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -858,11 +1009,222 @@ func (pc *PDClient) SetAllStoreLimits(value int) error {
 		return nil
 	}
 
-	data := map[string]interface{}{"rate": value}
+	data := map[string]any{"rate": value}
 	body, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
 	pc.l().Debugf("setting store limit: %d", value)
 	return pc.updateConfig(pdStoresLimitURI, bytes.NewBuffer(body))
+}
+
+// GetServicePrimary queries for the primary of a service
+func (pc *PDClient) GetServicePrimary(service string) (string, error) {
+	endpoints := pc.getEndpoints(fmt.Sprintf("%s/%s", pdServicePrimaryURI, service))
+
+	var primary string
+	_, err := tryURLs(endpoints, func(endpoint string) ([]byte, error) {
+		body, err := pc.httpClient.Get(pc.ctx, endpoint)
+		if err != nil {
+			return body, err
+		}
+
+		return body, json.Unmarshal(body, &primary)
+	})
+	return primary, err
+}
+
+const (
+	tsoStatusURI        = "status"
+	schedulingStatusURI = "status"
+)
+
+// TSOClient is an HTTP client of the TSO server
+type TSOClient struct {
+	version    string
+	addrs      []string
+	tlsEnabled bool
+	httpClient *utils.HTTPClient
+	ctx        context.Context
+}
+
+// NewTSOClient returns a new TSOClient, the context must have
+// a *logprinter.Logger as value of "logger"
+func NewTSOClient(
+	ctx context.Context,
+	addrs []string,
+	timeout time.Duration,
+	tlsConfig *tls.Config,
+) *TSOClient {
+	enableTLS := false
+	if tlsConfig != nil {
+		enableTLS = true
+	}
+
+	if _, ok := ctx.Value(logprinter.ContextKeyLogger).(*logprinter.Logger); !ok {
+		panic("the context must have logger inside")
+	}
+
+	cli := &TSOClient{
+		addrs:      addrs,
+		tlsEnabled: enableTLS,
+		httpClient: utils.NewHTTPClient(timeout, tlsConfig),
+		ctx:        ctx,
+	}
+
+	cli.tryIdentifyVersion()
+	return cli
+}
+
+// func (tc *TSOClient) l() *logprinter.Logger {
+// 	return tc.ctx.Value(logprinter.ContextKeyLogger).(*logprinter.Logger)
+// }
+
+func (tc *TSOClient) tryIdentifyVersion() {
+	endpoints := tc.getEndpoints(tsoStatusURI)
+	response := map[string]string{}
+	_, err := tryURLs(endpoints, func(endpoint string) ([]byte, error) {
+		body, err := tc.httpClient.Get(tc.ctx, endpoint)
+		if err != nil {
+			return body, err
+		}
+
+		return body, json.Unmarshal(body, &response)
+	})
+	if err == nil {
+		tc.version = response["version"]
+	}
+}
+
+// GetURL builds the client URL of PDClient
+func (tc *TSOClient) GetURL(addr string) string {
+	httpPrefix := "http"
+	if tc.tlsEnabled {
+		httpPrefix = "https"
+	}
+	return fmt.Sprintf("%s://%s", httpPrefix, addr)
+}
+
+func (tc *TSOClient) getEndpoints(uri string) (endpoints []string) {
+	for _, addr := range tc.addrs {
+		endpoint := fmt.Sprintf("%s/%s", tc.GetURL(addr), uri)
+		endpoints = append(endpoints, endpoint)
+	}
+
+	return
+}
+
+// CheckHealth checks the health of TSO node.
+func (tc *TSOClient) CheckHealth() error {
+	endpoints := tc.getEndpoints(tsoStatusURI)
+
+	_, err := tryURLs(endpoints, func(endpoint string) ([]byte, error) {
+		body, err := tc.httpClient.Get(tc.ctx, endpoint)
+		if err != nil {
+			return body, err
+		}
+
+		return body, nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// SchedulingClient is an HTTP client of the scheduling server
+type SchedulingClient struct {
+	version    string
+	addrs      []string
+	tlsEnabled bool
+	httpClient *utils.HTTPClient
+	ctx        context.Context
+}
+
+// NewSchedulingClient returns a new SchedulingClient, the context must have
+// a *logprinter.Logger as value of "logger"
+func NewSchedulingClient(
+	ctx context.Context,
+	addrs []string,
+	timeout time.Duration,
+	tlsConfig *tls.Config,
+) *SchedulingClient {
+	enableTLS := false
+	if tlsConfig != nil {
+		enableTLS = true
+	}
+
+	if _, ok := ctx.Value(logprinter.ContextKeyLogger).(*logprinter.Logger); !ok {
+		panic("the context must have logger inside")
+	}
+
+	cli := &SchedulingClient{
+		addrs:      addrs,
+		tlsEnabled: enableTLS,
+		httpClient: utils.NewHTTPClient(timeout, tlsConfig),
+		ctx:        ctx,
+	}
+
+	cli.tryIdentifyVersion()
+	return cli
+}
+
+// func (tc *SchedulingClient) l() *logprinter.Logger {
+// 	return tc.ctx.Value(logprinter.ContextKeyLogger).(*logprinter.Logger)
+// }
+
+func (tc *SchedulingClient) tryIdentifyVersion() {
+	endpoints := tc.getEndpoints(schedulingStatusURI)
+	response := map[string]string{}
+	_, err := tryURLs(endpoints, func(endpoint string) ([]byte, error) {
+		body, err := tc.httpClient.Get(tc.ctx, endpoint)
+		if err != nil {
+			return body, err
+		}
+
+		return body, json.Unmarshal(body, &response)
+	})
+	if err == nil {
+		tc.version = response["version"]
+	}
+}
+
+// GetURL builds the client URL of PDClient
+func (tc *SchedulingClient) GetURL(addr string) string {
+	httpPrefix := "http"
+	if tc.tlsEnabled {
+		httpPrefix = "https"
+	}
+	return fmt.Sprintf("%s://%s", httpPrefix, addr)
+}
+
+func (tc *SchedulingClient) getEndpoints(uri string) (endpoints []string) {
+	for _, addr := range tc.addrs {
+		endpoint := fmt.Sprintf("%s/%s", tc.GetURL(addr), uri)
+		endpoints = append(endpoints, endpoint)
+	}
+
+	return
+}
+
+// CheckHealth checks the health of scheduling node.
+func (tc *SchedulingClient) CheckHealth() error {
+	endpoints := tc.getEndpoints(schedulingStatusURI)
+
+	_, err := tryURLs(endpoints, func(endpoint string) ([]byte, error) {
+		body, err := tc.httpClient.Get(tc.ctx, endpoint)
+		if err != nil {
+			return body, err
+		}
+
+		return body, nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

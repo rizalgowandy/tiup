@@ -24,6 +24,7 @@ import (
 
 	"github.com/AstroProfundis/sysinfo"
 	"github.com/pingcap/tidb-insight/collector/insight"
+	"github.com/pingcap/tiup/pkg/checkpoint"
 	"github.com/pingcap/tiup/pkg/cluster/ctxt"
 	"github.com/pingcap/tiup/pkg/cluster/module"
 	"github.com/pingcap/tiup/pkg/cluster/spec"
@@ -64,6 +65,7 @@ var (
 	CheckNameTHP           = "thp"
 	CheckNameDirPermission = "permission"
 	CheckNameDirExist      = "exist"
+	CheckNameTimeZone      = "timezone"
 )
 
 // CheckResult is the result of a check
@@ -157,6 +159,11 @@ func checkSysInfo(opt *CheckOptions, sysInfo *sysinfo.SysInfo) []*CheckResult {
 	return results
 }
 
+// Try to keep this in sync with
+// https://docs.pingcap.com/tidb/stable/hardware-and-software-requirements#os-and-platform-requirements
+//
+// This information is in most cases based on the `ID` (Vendor) and `VERSION_ID` (Release) of /etc/os-release
+// See https://github.com/AstroProfundis/sysinfo/blob/tiup/os.go for details.
 func checkOSInfo(opt *CheckOptions, osInfo *sysinfo.OS) *CheckResult {
 	result := &CheckResult{
 		Name: CheckNameOSVer,
@@ -165,47 +172,75 @@ func checkOSInfo(opt *CheckOptions, osInfo *sysinfo.OS) *CheckResult {
 
 	// check OS vendor
 	switch osInfo.Vendor {
-	case "amzn":
-		// Amazon Linux 2 is based on CentOS 7 and is recommended for
-		// AWS Graviton 2 (ARM64) deployments.
-		if ver, _ := strconv.ParseFloat(osInfo.Version, 64); ver < 2 || ver >= 3 {
-			result.Err = fmt.Errorf("%s %s not supported, use version 2 please",
+	case "kylin":
+		// VERSION_ID="V10"
+		if ver, _ := strconv.ParseFloat(strings.Trim(osInfo.Version, "V"), 64); ver < 10 {
+			result.Err = fmt.Errorf("%s %s not supported, use version V10 or higher",
 				osInfo.Name, osInfo.Release)
 			return result
 		}
-	case "centos", "redhat", "rhel", "ol":
-		// check version
-		// CentOS 8 is known to be not working, and we don't have plan to support it
-		// as of now, we may add support for RHEL 8 based systems in the future.
-		if ver, _ := strconv.ParseFloat(osInfo.Version, 64); ver < 7 || ver >= 8 {
-			result.Err = fmt.Errorf("%s %s not supported, use version 7 please",
+	case "amzn":
+		// https://aws.amazon.com/linux/amazon-linux-2023/
+		if osInfo.Version == "2023" {
+			return result
+		}
+
+		// Amazon Linux 2 is based on CentOS 7 and is recommended for
+		// AWS Graviton 2 (ARM64) deployments.
+		// https://aws.amazon.com/amazon-linux-2/
+		if ver, _ := strconv.ParseFloat(osInfo.Version, 64); ver < 2 || ver >= 3 {
+			result.Err = fmt.Errorf("%s %s not supported, use Amazon Linux 2 or Amazon Linux 2023 please",
+				osInfo.Name, osInfo.Release)
+			return result
+		}
+	case "centos":
+		// CentOS Linux is EOL
+		// CentOS Stream 9 and newer is still fine
+		if ver, _ := strconv.ParseFloat(osInfo.Version, 64); ver < 9 {
+			result.Err = fmt.Errorf("%s %s not supported, use version 9 or higher",
+				osInfo.Name, osInfo.Release)
+			return result
+		}
+	case "redhat", "rhel", "ol":
+		// RHEL 8.4 or newer 8.x versions are supported
+		if ver, _ := strconv.ParseFloat(osInfo.Version, 64); ver < 8.4 || ver >= 9 {
+			result.Err = fmt.Errorf("%s %s not supported, use version 8.4 or a later 8.x version please",
+				osInfo.Name, osInfo.Release)
+			return result
+		}
+	case "rocky":
+		// Rocky Linux
+		if ver, _ := strconv.ParseFloat(osInfo.Version, 64); ver < 9.1 {
+			result.Err = fmt.Errorf("%s %s not supported, use version 9.1 or later please",
 				osInfo.Name, osInfo.Release)
 			return result
 		}
 	case "debian":
 		// debian support is not fully tested, but we suppose it should work
-		msg := "debian support is not fully tested, be careful"
+		msg := "Debian support is not fully tested, be careful"
 		result.Err = fmt.Errorf("%s (%s)", result.Msg, msg)
 		result.Warn = true
-		if ver, _ := strconv.ParseFloat(osInfo.Version, 64); ver < 9 {
-			result.Err = fmt.Errorf("%s %s not supported, use version 9 or higher (%s)",
+		if ver, _ := strconv.ParseFloat(osInfo.Version, 64); ver < 10 {
+			result.Err = fmt.Errorf("%s %s not supported, use version 10 or higher (%s)",
 				osInfo.Name, osInfo.Release, msg)
 			result.Warn = false
 			return result
 		}
 	case "ubuntu":
 		// ubuntu support is not fully tested, but we suppose it should work
-		msg := "ubuntu support is not fully tested, be careful"
+		msg := "Ubuntu support is not fully tested, be careful"
 		result.Err = fmt.Errorf("%s (%s)", result.Msg, msg)
 		result.Warn = true
-		if ver, _ := strconv.ParseFloat(osInfo.Version, 64); ver < 18.04 {
-			result.Err = fmt.Errorf("%s %s not supported, use version 18.04 or higher (%s)",
+		if ver, _ := strconv.ParseFloat(osInfo.Version, 64); ver < 20.04 {
+			result.Err = fmt.Errorf("%s %s not supported, use version 20.04 or higher (%s)",
 				osInfo.Name, osInfo.Release, msg)
 			result.Warn = false
 			return result
 		}
+	case "openEuler":
+		return result
 	default:
-		result.Err = fmt.Errorf("os vendor %s not supported", osInfo.Vendor)
+		result.Err = fmt.Errorf("OS vendor %s not supported", osInfo.Vendor)
 		return result
 	}
 
@@ -488,7 +523,7 @@ func CheckKernelParameters(opt *CheckOptions, p []byte) []*CheckResult {
 }
 
 // CheckServices checks if a service is running on the host
-func CheckServices(ctx context.Context, e ctxt.Executor, host, service string, disable bool) *CheckResult {
+func CheckServices(ctx context.Context, e ctxt.Executor, host, service string, disable bool, systemdMode spec.SystemdMode) *CheckResult {
 	result := &CheckResult{
 		Name: CheckNameSysService,
 	}
@@ -498,7 +533,7 @@ func CheckServices(ctx context.Context, e ctxt.Executor, host, service string, d
 		ctx,
 		fmt.Sprintf(
 			"systemctl list-unit-files --type service | grep -i %s.service | wc -l", service),
-		true)
+		systemdMode != spec.UserMode)
 	if err != nil {
 		result.Err = err
 		return result
@@ -510,20 +545,20 @@ func CheckServices(ctx context.Context, e ctxt.Executor, host, service string, d
 		result.Msg = fmt.Sprintf("service %s not found, ignore", service)
 		return result
 	}
-
-	active, err := GetServiceStatus(ctx, e, service+".service")
+	// The service checked here needs to use systemctl in system mode, so the value passed by scope is empty.
+	active, _, _, err := GetServiceStatus(ctx, e, service+".service", "", string(systemdMode))
 	if err != nil {
 		result.Err = err
 	}
 
 	switch disable {
 	case false:
-		if !strings.Contains(active, "running") {
+		if active != "active" {
 			result.Err = fmt.Errorf("service %s is not running", service)
 			result.Msg = fmt.Sprintf("start %s.service", service)
 		}
 	case true:
-		if strings.Contains(active, "running") {
+		if active == "active" {
 			result.Err = fmt.Errorf("service %s is running but should be stopped", service)
 			result.Msg = fmt.Sprintf("stop %s.service", service)
 		}
@@ -533,14 +568,14 @@ func CheckServices(ctx context.Context, e ctxt.Executor, host, service string, d
 }
 
 // CheckSELinux checks if SELinux is enabled on the host
-func CheckSELinux(ctx context.Context, e ctxt.Executor) *CheckResult {
+func CheckSELinux(ctx context.Context, e ctxt.Executor, sudo bool) *CheckResult {
 	result := &CheckResult{
 		Name: CheckNameSELinux,
 	}
 	m := module.NewShellModule(module.ShellModuleConfig{
 		// ignore grep errors, the file may not exist for some systems
 		Command: "grep -E '^\\s*SELINUX=enforcing' /etc/selinux/config 2>/dev/null | wc -l",
-		Sudo:    true,
+		Sudo:    sudo,
 	})
 	stdout, stderr, err := m.Execute(ctx, e)
 	if err != nil {
@@ -569,7 +604,7 @@ func CheckListeningPort(opt *CheckOptions, host string, topo *spec.Specification
 	ports := make(map[int]struct{})
 
 	topo.IterInstance(func(inst spec.Instance) {
-		if inst.GetHost() != host {
+		if inst.GetManageHost() != host {
 			return
 		}
 		for _, up := range inst.UsedPorts() {
@@ -621,7 +656,7 @@ func CheckPartitions(opt *CheckOptions, host string, topo *spec.Specification, r
 	uniqueStores := make(map[string][]storePartitionInfo) // host+partition -> info
 
 	topo.IterInstance(func(inst spec.Instance) {
-		if inst.GetHost() != host {
+		if inst.GetManageHost() != host {
 			return
 		}
 		for _, dataDir := range spec.MultiDirAbs(topo.GlobalOptions.User, inst.DataDir()) {
@@ -732,15 +767,15 @@ func CheckFIOResult(rr, rw, lat []byte) []*CheckResult {
 	var results []*CheckResult
 
 	// check results for rand read test
-	var rrRes map[string]interface{}
+	var rrRes map[string]any
 	if err := json.Unmarshal(rr, &rrRes); err != nil {
 		results = append(results, &CheckResult{
 			Name: CheckNameFio,
 			Err:  fmt.Errorf("error parsing result of random read test, %s", err),
 		})
 	} else if jobs, ok := rrRes["jobs"]; ok {
-		readRes := jobs.([]interface{})[0].(map[string]interface{})["read"]
-		readIOPS := readRes.(map[string]interface{})["iops"]
+		readRes := jobs.([]any)[0].(map[string]any)["read"]
+		readIOPS := readRes.(map[string]any)["iops"]
 
 		results = append(results, &CheckResult{
 			Name: CheckNameFio,
@@ -754,18 +789,18 @@ func CheckFIOResult(rr, rw, lat []byte) []*CheckResult {
 	}
 
 	// check results for rand read write
-	var rwRes map[string]interface{}
+	var rwRes map[string]any
 	if err := json.Unmarshal(rw, &rwRes); err != nil {
 		results = append(results, &CheckResult{
 			Name: CheckNameFio,
 			Err:  fmt.Errorf("error parsing result of random read write test, %s", err),
 		})
 	} else if jobs, ok := rwRes["jobs"]; ok {
-		readRes := jobs.([]interface{})[0].(map[string]interface{})["read"]
-		readIOPS := readRes.(map[string]interface{})["iops"]
+		readRes := jobs.([]any)[0].(map[string]any)["read"]
+		readIOPS := readRes.(map[string]any)["iops"]
 
-		writeRes := jobs.([]interface{})[0].(map[string]interface{})["write"]
-		writeIOPS := writeRes.(map[string]interface{})["iops"]
+		writeRes := jobs.([]any)[0].(map[string]any)["write"]
+		writeIOPS := writeRes.(map[string]any)["iops"]
 
 		results = append(results, &CheckResult{
 			Name: CheckNameFio,
@@ -779,20 +814,20 @@ func CheckFIOResult(rr, rw, lat []byte) []*CheckResult {
 	}
 
 	// check results for read write latency
-	var latRes map[string]interface{}
+	var latRes map[string]any
 	if err := json.Unmarshal(lat, &latRes); err != nil {
 		results = append(results, &CheckResult{
 			Name: CheckNameFio,
 			Err:  fmt.Errorf("error parsing result of read write latency test, %s", err),
 		})
 	} else if jobs, ok := latRes["jobs"]; ok {
-		readRes := jobs.([]interface{})[0].(map[string]interface{})["read"]
-		readLat := readRes.(map[string]interface{})["lat_ns"]
-		readLatAvg := readLat.(map[string]interface{})["mean"]
+		readRes := jobs.([]any)[0].(map[string]any)["read"]
+		readLat := readRes.(map[string]any)["lat_ns"]
+		readLatAvg := readLat.(map[string]any)["mean"]
 
-		writeRes := jobs.([]interface{})[0].(map[string]interface{})["write"]
-		writeLat := writeRes.(map[string]interface{})["lat_ns"]
-		writeLatAvg := writeLat.(map[string]interface{})["mean"]
+		writeRes := jobs.([]any)[0].(map[string]any)["write"]
+		writeLat := writeRes.(map[string]any)["lat_ns"]
+		writeLatAvg := writeLat.(map[string]any)["mean"]
 
 		results = append(results, &CheckResult{
 			Name: CheckNameFio,
@@ -808,15 +843,15 @@ func CheckFIOResult(rr, rw, lat []byte) []*CheckResult {
 	return results
 }
 
-// CheckTHP checks THP in /sys/kernel/mm/transparent_hugepage/{enabled,defrag}
-func CheckTHP(ctx context.Context, e ctxt.Executor) *CheckResult {
+// CheckTHP checks THP in /sys/kernel/mm/transparent_hugepage/enabled
+func CheckTHP(ctx context.Context, e ctxt.Executor, sudo bool) *CheckResult {
 	result := &CheckResult{
 		Name: CheckNameTHP,
 	}
 
 	m := module.NewShellModule(module.ShellModuleConfig{
-		Command: fmt.Sprintf(`if [ -d %[1]s ]; then cat %[1]s/{enabled,defrag}; fi`, "/sys/kernel/mm/transparent_hugepage"),
-		Sudo:    true,
+		Command: fmt.Sprintf(`if [ -d %[1]s ]; then cat %[1]s/enabled; fi`, "/sys/kernel/mm/transparent_hugepage"),
+		Sudo:    sudo,
 	})
 	stdout, stderr, err := m.Execute(ctx, e)
 	if err != nil {
@@ -845,7 +880,8 @@ func CheckJRE(ctx context.Context, e ctxt.Executor, host string, topo *spec.Spec
 		}
 
 		// check if java cli is available
-		stdout, stderr, err := e.Execute(ctx, "java -version", false)
+		// the checkpoint part of context can't be shared between goroutines
+		stdout, stderr, err := e.Execute(checkpoint.NewContext(ctx), "java -version", false)
 		if err != nil {
 			results = append(results, &CheckResult{
 				Name: CheckNameCommand,
@@ -936,5 +972,51 @@ func CheckDirIsExist(ctx context.Context, e ctxt.Executor, path string) []*Check
 		})
 	}
 
+	return results
+}
+
+// CheckTimeZone performs checks if time zone is the same
+func CheckTimeZone(ctx context.Context, topo *spec.Specification, host string, rawData []byte) []*CheckResult {
+	var results []*CheckResult
+	var insightInfo, pd0insightInfo insight.InsightInfo
+	if err := json.Unmarshal(rawData, &insightInfo); err != nil {
+		return append(results, &CheckResult{
+			Name: CheckNameTimeZone,
+			Err:  err,
+		})
+	}
+
+	if len(topo.PDServers) < 1 {
+		return append(results, &CheckResult{
+			Name: CheckNameTimeZone,
+			Err:  fmt.Errorf("no pd found"),
+		})
+	}
+	// skip compare with itself
+	if topo.PDServers[0].Host == host {
+		return nil
+	}
+	pd0stdout, _, _ := ctxt.GetInner(ctx).GetOutputs(topo.PDServers[0].Host)
+	if err := json.Unmarshal(pd0stdout, &pd0insightInfo); err != nil {
+		return append(results, &CheckResult{
+			Name: CheckNameTimeZone,
+			Err:  err,
+		})
+	}
+
+	timezone := insightInfo.SysInfo.Node.Timezone
+	pd0timezone := pd0insightInfo.SysInfo.Node.Timezone
+
+	if timezone == pd0timezone {
+		results = append(results, &CheckResult{
+			Name: CheckNameTimeZone,
+			Msg:  "time zone is the same as the first PD machine: " + timezone,
+		})
+	} else {
+		results = append(results, &CheckResult{
+			Name: CheckNameTimeZone,
+			Err:  fmt.Errorf("time zone is %s, but the firt PD is %s", timezone, pd0timezone),
+		})
+	}
 	return results
 }

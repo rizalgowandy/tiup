@@ -6,6 +6,7 @@ on:
     branches:
       - ci/gh-*
       - release-*
+      - master
     paths-ignore:
       - '**.html'
       - '**.md'
@@ -24,8 +25,10 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     timeout-minutes: 30
+    outputs:
+      REL_VER: ${{ steps.build_tiup.outputs.REL_VER }}
     strategy:
       fail-fast: true
       matrix:
@@ -38,14 +41,14 @@ jobs:
     env:
       working-directory: ${{ github.workspace }}/go/src/github.com/${{ github.repository }}
     steps:
-      - name: Set up Go 1.18
-        uses: actions/setup-go@v2
+      - name: Set up Go 1.21
+        uses: actions/setup-go@v4
         with:
-          go-version: 1.18.x
+          go-version: 1.21.x
         id: go
 
       - name: Check out code into the Go module directory
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           ref: ${{ github.event.inputs.git-ref || github.event.pull_request.head.sha }}
           path: go/src/github.com/${{ github.repository }}
@@ -56,7 +59,7 @@ jobs:
         working-directory: ${{ env.working-directory }}
         if: github.event_name != 'release'
         run: |
-          STAGING_VER=`git describe --tags | sed -r "s/([^-]*-g)/r\1/"`
+          STAGING_VER=`git describe --tags | sed 's/-[^-]*$//' | sed -r 's/(-[^-]*$)/-nightly\1/'`
           echo ::set-output name=STAGING::$STAGING_VER
 
       - name: Get git ref and commit
@@ -88,7 +91,7 @@ jobs:
 
           if [ ! -z ${{ steps.check_staging.outputs.STAGING }} ]; then
             export EXTRA_LDFLAGS="-X \"github.com/${{ github.repository }}/pkg/version.TiUPVerName=${{ steps.check_staging.outputs.STAGING }}\""
-            export REL_VER=${{ steps.check_staging.outputs.STAGING }}+staging
+            export REL_VER=${{ steps.check_staging.outputs.STAGING }}
           else
             export REL_VER=`git describe --tags --always`
           fi
@@ -140,13 +143,12 @@ jobs:
           ${TAR} -C bin -czf package/dm-${REL_VER}-${ARCH}.tar.gz tiup-dm
           ${TAR} -C bin -czf package/playground-${REL_VER}-${ARCH}.tar.gz tiup-playground
           ${TAR} -C bin -czf package/client-${REL_VER}-${ARCH}.tar.gz tiup-client
-          ${TAR} -C bin -czf package/bench-${REL_VER}-${ARCH}.tar.gz tiup-bench
           ${TAR} -C bin -czf package/server-${REL_VER}-${ARCH}.tar.gz tiup-server
 
       - name: Publish packages
         working-directory: ${{ env.working-directory }}
         env:
-          TIUP_MIRRORS: ${{ secrets.TIUP_SERVER_STAGING }}
+          TIUP_MIRRORS: ${{ secrets.TIUP_SERVER_PROD }}
           TIUP_HOME: ${{ steps.packaging.outputs.TIUP_HOME }}
           TIUP_BIN: ${{ steps.packaging.outputs.TIUP_BIN }}
           REL_VER: ${{ steps.build_tiup.outputs.REL_VER }}
@@ -156,22 +158,11 @@ jobs:
           dm_desc: "Data Migration Platform manager"
           playground_desc: "Bootstrap a local TiDB cluster for fun"
           client_desc: "Client to connect playground"
-          bench_desc: "Benchmark database with different workloads"
           server_desc: "TiUP publish/cache server"
         run: |
-          if [ ! -z ${{ steps.check_staging.outputs.STAGING }} ]; then
-            TIUP_MIRRORS=${{ secrets.TIUP_SERVER_STAGING }}
-          else
-            TIUP_MIRRORS=${{ secrets.TIUP_SERVER_PROD }}
-          fi
           ${TIUP_BIN} mirror set ${TIUP_MIRRORS}
 
           echo ${{ secrets.TIUP_COMP_KEY_PINGCAP }} | base64 -d > $TIUP_HOME/keys/private.json
-
-          # build the latest tiup to use for publish, this is a workaround and should
-          # be removed after this PR is merged and released
-          GOOS=linux GOARCH=amd64 make tiup
-          cp bin/tiup ${TIUP_BIN}
 
           # add a random delay before actually publishing, this can help reduce manifest conflict
           # when there are multiple jobs running in parallel
@@ -181,7 +172,6 @@ jobs:
           ${TIUP_BIN} mirror publish dm ${REL_VER} package/dm-${REL_VER}-${ARCH}.tar.gz tiup-dm --arch ${{ matrix.arch }} --os ${{ matrix.os }} --desc="${dm_desc}" --standalone
           ${TIUP_BIN} mirror publish playground ${REL_VER} package/playground-${REL_VER}-${ARCH}.tar.gz tiup-playground --arch ${{ matrix.arch }} --os ${{ matrix.os }} --desc="${playground_desc}"
           ${TIUP_BIN} mirror publish client ${REL_VER} package/client-${REL_VER}-${ARCH}.tar.gz tiup-client --arch ${{ matrix.arch }} --os ${{ matrix.os }} --desc="${client_desc}"
-          ${TIUP_BIN} mirror publish bench ${REL_VER} package/bench-${REL_VER}-${ARCH}.tar.gz tiup-bench --arch ${{ matrix.arch }} --os ${{ matrix.os }} --desc="${bench_desc}"
           ${TIUP_BIN} mirror publish server ${REL_VER} package/server-${REL_VER}-${ARCH}.tar.gz tiup-server --arch ${{ matrix.arch }} --os ${{ matrix.os }} --desc="${server_desc}" --hide --standalone
 
       - name: Upload the all-in-one tarball to GitHub release
@@ -195,3 +185,40 @@ jobs:
           omitNameDuringUpdate: true
           prerelease: ${{ github.event.release.prerelease }}
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  brew-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: release
+    steps:
+      - name: Check out brew code
+        uses: actions/checkout@v3
+        continue-on-error: true
+        if: github.event_name == 'release'
+        with:
+          repository: pingcap/homebrew-brew
+          persist-credentials: false
+          ref: master
+          path: ${{ github.workspace }}/homebrew-brew
+          fetch-depth: 0
+
+      - name: Update and Check tiup version
+        id: update_version
+        working-directory: ${{ github.workspace }}/homebrew-brew
+        continue-on-error: true
+        if: github.event_name == 'release'
+        run: |
+          sed -i 's/version.*/version "${{ needs.release.outputs.REL_VER }}"/g'  Formula/tiup.rb
+          sed -i 's/tag:.*/tag:      "${{ needs.release.outputs.REL_VER }}"/g'  Formula/tiup.rb
+          cat Formula/tiup.rb
+          
+      - name: Push new homebrew
+        uses: actions-js/push@master
+        continue-on-error: true
+        if: github.event_name == 'release'
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          directory: ${{ github.workspace }}/homebrew-brew
+          message: "tiup: ${{ needs.release.outputs.REL_VER }}"
+          branch: master
+          repository: pingcap/homebrew-brew

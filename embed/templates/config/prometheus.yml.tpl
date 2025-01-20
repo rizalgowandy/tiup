@@ -1,8 +1,14 @@
 ---
 global:
-  scrape_interval:     15s # By default, scrape targets every 15 seconds.
+{{- if .ScrapeInterval}}
+  scrape_interval: {{.ScrapeInterval}}
+{{- else}}
+  scrape_interval: 15s # By default, scrape targets every 15 seconds.
+{{- end}}
   evaluation_interval: 15s # By default, scrape targets every 15 seconds.
-  # scrape_timeout is set to the global default (10s).
+{{- if .ScrapeTimeout}}
+  scrape_timeout: {{.ScrapeTimeout}}
+{{- end}}
   external_labels:
     cluster: '{{.ClusterName}}'
     monitor: "prometheus"
@@ -59,28 +65,15 @@ alerting:
 {{- end}}
 
 scrape_configs:
-{{- if .PushgatewayAddr}}
+{{- if .PushgatewayAddrs}}
   - job_name: 'overwritten-cluster'
     scrape_interval: 15s
     honor_labels: true # don't overwrite job & instance labels
     static_configs:
-      - targets: ['{{.PushgatewayAddr}}']
-
-  - job_name: "blackbox_exporter_http"
-    scrape_interval: 30s
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    static_configs:
     - targets:
-      - 'http://{{.PushgatewayAddr}}/metrics'
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: {{.BlackboxAddr}}
+{{- range .PushgatewayAddrs}}
+      - '{{.}}'
+{{- end}}
 {{- end}}
 {{- if .LightningAddrs}}
   - job_name: "lightning"
@@ -117,6 +110,22 @@ scrape_configs:
 {{- range .TiDBStatusAddrs}}
       - '{{.}}'
 {{- end}}
+  - job_name: "tiproxy"
+    honor_labels: true # don't overwrite job & instance labels
+    metrics_path: /api/metrics
+{{- if .TLSEnabled}}
+    scheme: https
+    tls_config:
+      insecure_skip_verify: false
+      ca_file: ../tls/ca.crt
+      cert_file: ../tls/prometheus.crt
+      key_file: ../tls/prometheus.pem
+{{- end}}
+    static_configs:
+    - targets:
+{{- range .TiProxyStatusAddrs}}
+      - '{{.}}'
+{{- end}}
   - job_name: "tikv"
     honor_labels: true # don't overwrite job & instance labels
 {{- if .TLSEnabled}}
@@ -145,6 +154,36 @@ scrape_configs:
     static_configs:
     - targets:
 {{- range .PDAddrs}}
+      - '{{.}}'
+{{- end}}
+  - job_name: "tso"
+    honor_labels: true # don't overwrite job & instance labels
+{{- if .TLSEnabled}}
+    scheme: https
+    tls_config:
+      insecure_skip_verify: false
+      ca_file: ../tls/ca.crt
+      cert_file: ../tls/prometheus.crt
+      key_file: ../tls/prometheus.pem
+{{- end}}
+    static_configs:
+    - targets:
+{{- range .TSOAddrs}}
+      - '{{.}}'
+{{- end}}
+  - job_name: "scheduling"
+    honor_labels: true # don't overwrite job & instance labels
+{{- if .TLSEnabled}}
+    scheme: https
+    tls_config:
+      insecure_skip_verify: false
+      ca_file: ../tls/ca.crt
+      cert_file: ../tls/prometheus.crt
+      key_file: ../tls/prometheus.pem
+{{- end}}
+    static_configs:
+    - targets:
+{{- range .SchedulingAddrs}}
       - '{{.}}'
 {{- end}}
 {{- if .TiFlashStatusAddrs}}
@@ -226,7 +265,7 @@ scrape_configs:
       - source_labels: [__param_target]
         target_label: instance
       - target_label: __address__
-        replacement: {{.BlackboxAddr}}
+        replacement: '{{.BlackboxAddr}}'
 {{- end}}
 {{- if .CDCAddrs}}
   - job_name: "ticdc"
@@ -242,6 +281,23 @@ scrape_configs:
     static_configs:
     - targets:
 {{- range .CDCAddrs}}
+      - '{{.}}'
+{{- end}}
+{{- end}}
+{{- if .TiKVCDCAddrs}}
+  - job_name: "tikv-cdc"
+    honor_labels: true # don't overwrite job & instance labels
+{{- if .TLSEnabled}}
+    scheme: https
+    tls_config:
+      insecure_skip_verify: false
+      ca_file: ../tls/ca.crt
+      cert_file: ../tls/prometheus.crt
+      key_file: ../tls/prometheus.pem
+{{- end}}
+    static_configs:
+    - targets:
+{{- range .TiKVCDCAddrs}}
       - '{{.}}'
 {{- end}}
 {{- end}}
@@ -298,9 +354,32 @@ scrape_configs:
       labels:
         group: 'tiflash'
 {{- end}}
-{{- if .PushgatewayAddr}}
+{{- if .CDCAddrs}}
     - targets:
-      - '{{.PushgatewayAddr}}'
+    {{- range .CDCAddrs}}
+       - '{{.}}'
+    {{- end}}
+      labels:
+        group: 'ticdc'
+{{- end}}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: '{{.BlackboxAddr}}'
+  - job_name: "monitor_port_probe"
+    scrape_interval: 30s
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+{{- if .PushgatewayAddrs}}
+    - targets:
+{{- range .PushgatewayAddrs}}
+      - '{{.}}'
+{{- end}}
       labels:
         group: 'pushgateway'
 {{- end}}
@@ -327,8 +406,10 @@ scrape_configs:
         target_label: __param_target
       - source_labels: [__param_target]
         target_label: instance
+      {{- if .BlackboxAddr}}
       - target_label: __address__
-        replacement: {{.BlackboxAddr}}
+        replacement: '{{.BlackboxAddr}}'
+      {{- end}}
 {{- range $addr := .BlackboxExporterAddrs}}
   - job_name: "blackbox_exporter_{{$addr}}_icmp"
     scrape_interval: 6s
@@ -352,7 +433,7 @@ scrape_configs:
       - source_labels: []
         regex: .*
         target_label: __address__
-        replacement: {{$addr}}
+        replacement: '{{$addr}}'
 {{- end}}
 
 {{- if .DMMasterAddrs}}

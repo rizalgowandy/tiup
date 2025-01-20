@@ -13,22 +13,23 @@
 
 package instance
 
-import (
-	"io"
-)
+func (inst *TiKVInstance) getConfig() map[string]any {
+	config := make(map[string]any)
+	config["rocksdb.max-open-files"] = 256
+	config["raftdb.max-open-files"] = 256
+	config["storage.reserve-space"] = 0
+	config["storage.reserve-raft-space"] = 0
 
-const tikvConfig = `
-[rocksdb]
-max-open-files = 256
+	if inst.mode == "tidb-cse" {
+		config["storage.api-version"] = 2
+		config["storage.enable-ttl"] = true
+		config["dfs.prefix"] = "tikv"
+		config["dfs.s3-endpoint"] = inst.cseOpts.S3Endpoint
+		config["dfs.s3-key-id"] = inst.cseOpts.AccessKey
+		config["dfs.s3-secret-key"] = inst.cseOpts.SecretKey
+		config["dfs.s3-bucket"] = inst.cseOpts.Bucket
+		config["dfs.s3-region"] = "local"
+	}
 
-[raftdb]
-max-open-files = 256
-
-[storage]
-reserve-space = 0
-`
-
-func writeTiKVConfig(w io.Writer) error {
-	_, err := w.Write([]byte(tikvConfig))
-	return err
+	return config
 }

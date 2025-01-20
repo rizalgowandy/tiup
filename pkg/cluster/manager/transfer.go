@@ -63,13 +63,13 @@ func (m *Manager) Transfer(name string, opt TransferOptions, gOpt operator.Optio
 
 	uniqueHosts := map[string]set.StringSet{} // host-sshPort -> {remote-path}
 	topo.IterInstance(func(inst spec.Instance) {
-		key := fmt.Sprintf("%s-%d", inst.GetHost(), inst.GetSSHPort())
+		key := fmt.Sprintf("%d-%s", inst.GetSSHPort(), inst.GetManageHost())
 		if _, found := uniqueHosts[key]; !found {
 			if len(gOpt.Roles) > 0 && !filterRoles.Exist(inst.Role()) {
 				return
 			}
 
-			if len(gOpt.Nodes) > 0 && !filterNodes.Exist(inst.GetHost()) {
+			if len(gOpt.Nodes) > 0 && (!filterNodes.Exist(inst.GetHost()) || !filterNodes.Exist(inst.GetManageHost())) {
 				return
 			}
 
@@ -91,7 +91,7 @@ func (m *Manager) Transfer(name string, opt TransferOptions, gOpt operator.Optio
 
 	srcPath := opt.Local
 	for hostKey, i := range uniqueHosts {
-		host := strings.Split(hostKey, "-")[0]
+		host := hostKey[len(strings.Split(hostKey, "-")[0])+1:]
 		for _, p := range i.Slice() {
 			t := task.NewBuilder(m.logger)
 			if opt.Pull {
@@ -155,7 +155,7 @@ func renderInstanceSpec(t string, inst spec.Instance) ([]string, error) {
 	return result, nil
 }
 
-func renderSpec(t string, s interface{}, id string) (string, error) {
+func renderSpec(t string, s any, id string) (string, error) {
 	// Only apply on *spec.TiDBInstance and *spec.PDInstance etc.
 	if v := reflect.ValueOf(s); v.Kind() == reflect.Ptr {
 		if v = v.Elem(); !v.IsValid() {

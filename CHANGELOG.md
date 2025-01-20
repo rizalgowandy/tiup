@@ -1,8 +1,433 @@
 TiUP Changelog
 
+## [1.16.1] 2024-10-31
+
+### New Features
+
+- Deploy DM in `tiup-playground` (#2465, @GMHDBJD, @siddontang)
+
+### Fixes
+
+- Fix several racings during download, do not upgrade nightly automatically in `tiup-cluster` (#2458, @xhebox)
+- Fix possible panic when `tiup-playground` failed to start (#2457, @xhebox)
+- Respect `component_versions` when `tiup-cluster` scales (#2451, @djshow832)
+- Code clean: replace 'math/rand' with 'crypto/rand' (#2455, @bb7133)
+- Fix tiup cannot update itself when tiup comonent exist (#2443, @nexustar)
+- Do not check HTTP port for TiFlash 7.1.0 or above (#2440, @Lloyd-Pottiger)
+- Also hide other password args (#2436, @xhebox)
+
+### Improvements
+
+- Avoid unnecessary primary transfer for pdms mode in `tiup-cluster` (#2414, @HuSharp)
+- Add `--port-offset` for `tiup-playground` to start multiple instances without port conflicts (#2453, @breezewish)
+- Start with a name for pdms mode in `tiup-cluster` and `tiup-playground` (#2438, #2446, #2447, @HuSharp)
+- Remove prometheus systemd and interrupts collector (#2445, @xhebox)
+- Add example of setting the tiflash-proxy topology (#2444, @JaySon-Huang)
+- Improve cluster restart messaging for `tiup-cluster` (#2442, @zph)
+- Print version when filling `tiup-playground --xx.binpath` (#2334, @HuSharp)
+- Only display `--comments` when needed for `tiup-playground` (#2314, @dveeden)
+
+## [1.16.0] 2024-06-27
+
+### New Features
+
+- Deploy PD as microservices in `tiup-cluster` (#2377, @rleungx)
+
+### Fixes
+
+- Fix missing TiProxy session certs when `tiup-cluster` scale-out (#2432, @djshow832)
+
+### Improvements
+
+- Remove tombstone nodes of pd when executing `tiup-cluster prune` (#2044, @nexustar)
+- Redact `-p` (password) arguments in command execution (#2425, @nexustar)
+- Avoid duplicated downloads when upgrade (#2423, @nexustar)
+
+## [1.15.2] 2024-05-28
+
+### Improvements
+
+- Remove LGPL dependency
+
+## [1.15.1] 2024-04-11
+
+### Fixes
+
+- Fix cannot choose cluster version in `tiup-playground` (#2397 #2402, @nexustar)
+- Fix wrong TiFlash numa config in `tiup-cluster` (#2401, @gengliqi)
+
+### Improvements
+
+- Wait for TSO component ready in `tiup-playground` (#2349, @HuSharp)
+- Improve error handling of mirror renew in `tiup` (#2400, @dveeden)
+
+## [1.15.0] 2024-04-01
+
+### New Features
+
+- Support no-sudo mode in `tiup-cluster` (#2350 #2373, @Yujie-Xie)
+- Add tidb-cse mode and remove tidb-disagg mode in `tiup-playground` (#2386, @breezewish)
+
+### Fixes
+
+- Fix can not set runtime config in config file specific by --tiflash.config in `tiup-playground` (#2346 #2383, @Lloyd-Pottiger)
+- Fix not sanitize tiproxy component config when scale in in `tiup-playground` (#2365, @xhebox)
+- Fix timeout when checking component upgrade in `tiup` (#2379, @KanShiori)
+- Fix pdms grafana display in `tiup-playground` (#2382, @HuSharp)
+- Fix not update prometheus config when scale in in `tiup-cluster` (#2387, @Yujie-Xie)
+
+### Improvements
+
+- Set the TiFlash logger level to DEBUG in `tiup-playground` (#2346, @Lloyd-Pottiger)
+- Add integration tests for tiproxy in `tiup-cluster` (#2371, @xhebox)
+- Set tiproxy addr without schema in `tiup-playground` (#2368, @xhebox)
+- Only pull nightly from cluster version in `tiup-playground` (#2364, @xhebox)
+- Skip tiproxy download & copy when upgrade in `tiup-cluster` (#2366, @xhebox)
+- Auto set session certs if there is a tiproxy in `tiup-cluster` (#2374, @xhebox)
+- Auto generate self-signed certs for TiProxy session migration in `tiup-playground` (#2372, @xhebox)
+- Remove resource manager in `tiup-playground` (#2381, @rleungx)
+- Add config advertise-addr to tiproxy spec in `tiup-cluster` and `tiup-playground` (#2392, @djshow832)
+
+## [1.14.1] 2024-01-12
+
+### Fixes
+
+- Fix tiproxy will restart even if version is the same in `tiup-cluster` (#2358, @xhebox)
+- Fix that empty label is not allowed in Prometheus in `tiup-cluster` (#2349, @borissavelev)
+- Fix can not set runtime config in config file & set TiFlash logger level to debug in `tiup-playground` (#2346, @Lloyd-Pottiger)
+- Fix TLS configs for tiproxy in `tiup-cluster` (#2356, @xhebox)
+- Fix cannot clone without global version in `tiup` (#2359, @nexustar)
+- Fix tiproxy config and version in `tiup-cluster` (#2354, @xhebox)
+- TiProxy needs to override usercfg in `tiup-playground` (#2342, @xhebox)
+- Fix the start script for alertmanager when enabling numa in `tiup-cluster` and `tiup-dm` (#2337, @KanShiori)
+- Fix metric targets will be overrided in `tiup-playground` (#2324, @xhebox)
+
+### Improvements
+
+- Change typo waitting to waiting in output messages for pdapi.go in `tiup-cluster` (#2330, @guangleibao)
+- Add check for rocky linux in `tiup-cluster` (#2333, @dveeden)
+- Fallback to default version when componen specific version is empty in `tiup-playground` (#2344, @xhebox)
+
+## [1.14.0] 2023-11-17
+
+### New Features
+
+- Support use different component versions in `tiup-cluster` (#2010 #2264 #2306, @nexustar)
+- Add global listen_host config in `tiup-cluster` and `tiup-dm` (#2303, @nexustar)
+- Add gloabl component_sources config in `tiup-cluster` and `tiup-dm` (#2320, @nexustar)
+- Support TiDB upgrade API to automatically pause DDL when upgrade in `tiup-cluster`(#2287 #2289, @nexustar)
+- Support TiProxy in `tiup-cluster` (#2271, @xhebox)
+- Support scheduling service in `tiup-playground` (#2273, @rleungx)
+- Support to show numa node when display in `tiup-cluster` and `tiup-dm` (#2295 #2312, @KanShiori)
+
+### Fixes
+
+- Make sure to signal tiproxy to stop in `tiup-playground` (#2318, @dveeden)
+- Fix "clone" operation may be missing packages without throwing an error in `tiup` (#2309 #2311, @nexustar)
+- Not cache the output of ss -tln command when checking wether components are started/stopped in `tiup-cluster` and `tiup-dm` (#2298, @KanShiori)
+- Fix tidb-dashboard listen_host in `tiup-cluster` (#2304, @nexustar)
+- Fix tiproxy metrics addr in `tiup-playground` (#2299, @xhebox)
+
+### Improvements
+
+- Upgrade go-sql-driver/mysql version to v1.7.1 (#2246, @srstack)
+- Use release version of TiProxy instead of nightly (#2305, @nexustar)
+- Use port to probe TiDB in `tiup-playground` (#2296, @KanShiori)
+- Add mcs name for pd log in `tiup-playground` (#2310, @HuSharp)
+- Not overwrite real error in retry function (#2290, @nexustar)
+- Fix alignment of output in `tiup-playground` (#2313, @dveeden)
+- ci improve (#2301 #2308 #2316, @nexustar @dveeden)
+
+## [1.13.1] 2023-09-25
+
+### Fixes
+
+- Increase timeout when publish package in `tiup`  (#2269, @nexustar)
+- Fix pd microservice component id in `tiup-playground` (#2272, @iosmanthus)
+- Fix grafana for multiple instances using same host in `tiup-cluster` and `tiup-dm` (#2277, @lastincisor)
+- Add cdn workaround (#2285, @nexustar)
+- Mirror: fix progress bar is not accurate (#2284, @nexustar)
+
+### Improvement
+
+- Support ignore version check when upgrade in `tiup-cluster` and `tiup-dm` (#2282, @nexustar)
+
+## [1.13.0] 2023-08-26
+
+### New Features
+
+- Support run components without tiup in `tiup` (#2265, @nexustar)
+- Support tiproxy in `tiup-playground` (#2202, @xhebox)
+- Show warning and continue if cannot delete data dir when destroy/scale-in instead of error and exit in `tiup-cluster` (#2256, @nexustar)
+- Support specifying package name of components in `tiup-cluster` (#2236, @nexustar)
+- playground: support microservices mode in `tiup-playground` (#2226, @rleungx)
+
+### Fixes
+
+- Fix the issue meta backup is failed when symbolic links exist in meta dir in `tiup-cluster`  (#2255, @@KanShiori)
+- Fix node filter on exec in `tiup-cluster` (#2251, @nexustar)
+
+### Improvements
+
+- Move to Go 1.21 (#2249, @dveeden)
+- Upgrade TiCDC before TiKV and PD when cluster is equal or greater than v5.1.0 in `tiup-cluster` (#2253, @KanShiori)
+- progress: Add option to add error detail (#2203, @dveeden)
+
+## [1.12.5] 2023-7-17
+
+### Fix
+
+- Fix cannot start tiflash above v7.1.0 in `tiup-cluster` (#2230, @zanmato1984)
+
+## [1.12.4] 2023-7-13
+
+### Fix
+
+- Fix cannot show tiflash uptime in `tiup-cluster` (#2227, @nexustar)
+
+### Improvement
+
+- Remove tcp_port for tiflash in `tiup-cluster` and `tiup-playground` (#2220, @zanmato1984)
+
+## [1.12.3] 2023-6-14
+
+### Fixes
+
+- Fix cannot edit manage_host on an exist cluster in `tiup-cluster` (#2210, @nexustar)
+- Fix still use host instead of manage_host in `tiup-cluster` (#2206 #2207, @nexustar)
+
+### Improvement
+
+- Check if the compnoent exists when uninstall in `tiup` (#2209, @srstack)
+
+## [1.12.2] 2023-5-19
+
+### Notes
+
+- Chore: migrate to new prow reviewing (#2160, @wuhuizuo)
+- Publish nightly tiup packages based on master branch (#2192, @nexustar)
+
+### Fixes
+
+- Fix cannot start alertmanager in `tiup-cluster` (#2200, @nexustar)
+- Fix TiFlash config not working in `tiup-playground` (#2190, @breezewish)
+- Fix --tiflash 0 not working in `tiup-playground` (#2189, @breezewish)
+- Fix port conflict when cluster version >= 5.4 and < 7.1 in `tiup-playground` (#2188, @Lloyd-Pottiger)
+- Fix cannot prune/scale-in tikv when use ipv6 in `tiup-cluster` (#2180, @nexustar)
+- Fix exec error when use ipv6 in `tiup-cluster` (#2193, @nexustar)
+
+### Improvements
+
+- Output PD endpoints in tikv-slim mode in `tiup-playground` (#2196, @breezewish)
+- Add --mode=tidb-disagg in `tiup-playground` (#2194, @breezewish)
+- Add option to specify TiKV port in `tiup-playground` (#2183, @dveeden)
+- include '--comments' in mysql command line arguments in `tiup-playground` (#2187, @mjonss)
+- Code refine for TiFlash in `tiup-playground` (#2177, @breezewish)
+- Code refine for args in `tiup-playground` (#2178, @breezewish)
+
+## [1.12.1] 2023-4-13
+
+### Fix
+
+- Fix ngm config in `tiup-cluster` (#2175, @Mystery-cyf)
+
+### Improvements
+
+- Remove TiFlash http service in `tiup-cluster` and `tiup-playground` (#2165, Lloyd-Pottige)
+- Remove ":" on default backup filename in `tiup-cluster` (#2174, @nexustar)
+- Allows setting other storage config for TiFlash when `storage.main` is not defined in `tiup-cluster` (#2161, @breezewish)
+- Support run TiFlash via args in `tiup-playground` (#2162, @breezewish)
+- Tidy output in `tiup-playground` (#2163, @breezewish)
+
+## [1.12.0] 2023-3-31
+
+### New Features
+
+- Support ipv6 in `tiup-cluster` and `tiup-dm` (#2068 #2069 #2070 #2075 #2117, @nexustar)
+- Add support for displaying the grafana URLs in JSON output in `tiup-cluster` and `tiup-dm` (#2041, @onlyacat)
+- Allow download directory when use builtin scp (#2098, @nexustar)
+- Support set manage host in `tiup-cluster` and `tiup-dm` (#2147, @srstack)
+- User perm from parent dir in `tiup-cluster` (#2143, @nexustar)
+- Support display tiflash uptime in `tiup-cluster` (#2094, @srstack)
+- Add ticdc port prob config in `tiup-cluster` (#2124, @sdojjy)
+- Allow users to run custom shell commands during the cluster rolling upgrade in `tiup-cluster` (#2130, @darkelf21cn)
+- Check upgrade offline in `tiup-cluster` (#2116, @srstack)
+- Check required CPU flags for TiFlash >= v6.3.0 in `tiup-cluster` (#2054, @solotzg)
+- Support connect to external Pushgateway in `tiup-cluster` (#2137, @nexustar)
+- Allow setting the TiCDC port in `tiup-playground` (#2140, @dveeden)
+
+### Improvements
+
+- Check the cdc capture can be found before drain the capture in `tiup-cluster` (#2059, @3AceShowHand)
+- Enable AutoTLS by default in `tiup-playground` (#2077, @dveeden)
+- Wait for leader to transfer back during rolling restart in `tiup-cluster` (#2051, @cosven)
+- Sync pdapi & typeutil with pd 6.3.0 in `tiup-cluster` (#2063, @AstroProfundis)
+- Optimize checks & tests (#2056, @AstroProfundis)
+- Mark openEuler as supported in `tiup-cluster` (#2145, @nexustar)
+- Merge tiflash config in tiup playground to reduce handwrite config in `tiup-playground` (#2086, @iosmanthus)
+- Add TIUP_VERBOSE in doc (#2111, @dveeden)
+- Delete storage.remote.cache.dir when prune in `tiup-cluster` (#2142, @hehechen)
+- Check process name before killing it in `tiup clean` (#2141, @dveeden)
+- Display disaggregated mode of TiFlash in `tiup-cluster` (#2133, @hehechen)
+- Remove mark_cache_size default value of tiflash.toml after v5.4.0 (#2138, @hongyunyan)
+- Delete !#$%&= from init password in `tiup-cluster` (#2136, @nexustar)
+
+## [1.11.3] 2023-02-14
+
+### Improvement
+
+- Disable telemetry by default ([#2119](https://github.com/pingcap/tiup/pull/2119), [@nexustar](https://github.com/nexustar))
+
+## [1.11.2] 2023-02-02
+
+### Fixes
+
+- base52: Check for invalid chars in `Decode()` ([#2103](https://github.com/pingcap/tiup/pull/2103), [@AstroProfundis](https://github.com/AstroProfundis))
+
+### Improvements
+
+- Update upgrade message in `tiup-cluster` ([#2110](https://github.com/pingcap/tiup/pull/2110), [@nexustar](https://github.com/nexustar))
+- Comment out tidb-dashboard in template in `tiup-cluster` ([#2112](https://github.com/pingcap/tiup/pull/2112), [@nexustar](https://github.com/nexustar))
+- Warn for cleanup failures due to missing datadir in `tiup clean` ([#2105](https://github.com/pingcap/tiup/pull/2105), [@dveeden](https://github.com/dveeden))
+- Improve tiup timeout message in `tiup` ([#2109](https://github.com/pingcap/tiup/pull/2109), [@nexustar](https://github.com/nexustar))
+
+## [1.11.1] 2022-11-24
+
+## Note
+
+`tiup bench` has been **moved** to https://github.com/PingCAP-QE/tiup-bench and not release with tiup
+
+### Fixes
+
+- Set `madvdontneed=1` for PD to shrink RSS after GC in `tiup-cluster` ([#2019](https://github.com/pingcap/tiup/pull/2019), [@lhy1024](https://github.com/lhy1024))
+- Fix playground may panic when component fail to start in `tiup-playground` ([#2076](https://github.com/pingcap/tiup/pull/2076), [@nexustar](https://github.com/nexustar))
+
+### Improvements
+
+- Support configuring `scrape_interval` and `scrape_timeout` for prometheus in `tiup-cluster` ([#2071](https://github.com/pingcap/tiup/pull/2071), [@nexustar](https://github.com/nexustar))
+- Remove the restriction that tikv num must be greater than 0 in `tiup-playground` ([#2073](https://github.com/pingcap/tiup/pull/2073), [@lilinghai](https://github.com/lilinghai))
+- Mark kylin v10 as supported OS in `tiup-cluster` ([#2079](https://github.com/pingcap/tiup/pull/2079), [@nexustar](https://github.com/nexustar))
+- Set `ETCDCTL_API=v3` to get the v3 API in `tiup-ctl` ([#2081](https://github.com/pingcap/tiup/pull/2081), [@dveeden](https://github.com/dveeden))
+- Avoid redirect when grafana `root_url` is set in `tiup-cluster` ([#2082](https://github.com/pingcap/tiup/pull/2082), [@nexustar](https://github.com/nexustar))
+
+## [1.11.0] 2022-09-23
+
+### New Features
+
+- Add support of new component `tikv-cdc` for `tiup-cluster` and `tiup-playground` ([#2000](https://github.com/pingcap/tiup/pull/2000), [#2022](https://github.com/pingcap/tiup/pull/2022), [@pingyu](https://github.com/pingyu))
+- Add support of dedicated `tidb-dashboard` in `tiup-cluster` ([#2017](https://github.com/pingcap/tiup/pull/2017), [@nexustar](https://github.com/nexustar))
+- Add support of TiCDC rolling upgrade for `tiup-cluster` ([#1996](https://github.com/pingcap/tiup/pull/1996), [#2005](https://github.com/pingcap/tiup/pull/2005), [#2036](https://github.com/pingcap/tiup/pull/2036),  [@3AceShowHand](https://github.com/3AceShowHand))
+- Add support to config TiCDC cluster-id for `tiup-cluster` ([#2042](https://github.com/pingcap/tiup/pull/2042), [@nexustar](https://github.com/nexustar))
+- Add support to set CPUAffinity in `tiup-cluster` ([#2007](https://github.com/pingcap/tiup/pull/2007), [@YaozhengWang](https://github.com/YaozhengWang))
+- Allow to display memory usage in `tiup-cluster` ([#1994](https://github.com/pingcap/tiup/pull/1994), [@nexustar](https://github.com/nexustar))
+
+
+### Fixes
+
+- Fix tmp file not deleted when upload package in `tiup-server` ([#2021](https://github.com/pingcap/tiup/pull/2021), [@nexustar](https://github.com/nexustar))
+- Fix redundant log when start TiDB cluster with `tiup-playground` ([#2032](https://github.com/pingcap/tiup/pull/2032), [@nexustar](https://github.com/nexustar))
+- Fix panic when fail to start component in `tiup-playground` ([#1933](https://github.com/pingcap/tiup/pull/1933), [@dveeden](https://github.com/dveeden))
+- Fix scale-out cdc command in `tiup-playground` ([#1935](https://github.com/pingcap/tiup/pull/1935), [@lonng](https://github.com/lonng))
+- Fix ineffectiveness of ticdc.config in `tiup-playground` ([#1978](https://github.com/pingcap/tiup/pull/1978), [@pingyu](https://github.com/pingyu))
+- Fix timezone check and remove duplicate cleanTasks in `tiup-cluster` ([#2045](https://github.com/pingcap/tiup/pull/2045), [@nexustar](https://github.com/nexustar))
+
+### Improvements
+
+- Use test-cluster as dashboard name in `tiup-playground` ([#1920](https://github.com/pingcap/tiup/pull/1920), [@breezewish](https://github.com/breezewish))
+- Add pd.port argument in `tiup-playground` ([#1931](https://github.com/pingcap/tiup/pull/1931), [@pingyu](https://github.com/pingyu))
+- Allow --tag argument on any locate in `tiup-playground` ([#1998](https://github.com/pingcap/tiup/pull/1998), [@pingyu](https://github.com/pingyu))
+
+## [1.10.3] 2022-08-11
+
+### Mirror update
+
+- Add new version for node_exporter (https://github.com/prometheus/node_exporter/releases/tag/v1.3.1) and blackbox_exporter (https://github.com/prometheus/blackbox_exporter/releases/tag/v0.21.1) in tiup repository. All the new tidb clusters or instances deployed by tiup cluster will use the new version by default.
+
+### Fixes
+
+- Fix cannot clean related tidb topology after scale-in in `tiup-cluster` ([#2011](https://github.com/pingcap/tiup/pull/2011), [@nexustar](https://github.com/nexustar))
+- Fix fail to push if server name has "-" in `tiup-cluster` ([#2008](https://github.com/pingcap/tiup/pull/2008), [@nexustar](https://github.com/nexustar))
+- Fix unable to configure tiflash LearnerConfig in `tiup-cluster` ([#1991](https://github.com/pingcap/tiup/pull/1991), [@srstack](https://github.com/srstack))
+
+### Improvements
+
+- Improve the THP check rule in `tiup-cluster` ([#2014](https://github.com/pingcap/tiup/pull/2014), [@nexustar](https://github.com/nexustar))
+- Add an example in -h for `tiup mirror clone` for multiple versions ([#2009](https://github.com/pingcap/tiup/pull/2009), [@nexustar](https://github.com/nexustar))
+
+## [1.10.2] 2022-06-16
+
+### Fixes
+
+- Fix cannot get drainer status from pd in `tiup-cluster` ([#1922](https://github.com/pingcap/tiup/pull/1922), [@srstack](https://github.com/srstack))
+- Fix error when check time zone in `tiup-cluster` ([#1925](https://github.com/pingcap/tiup/pull/1925), [@nexustar](https://github.com/nexustar))
+- Fix wrong parameter value of --peer-urls in `tiup-dm` ([#1926](https://github.com/pingcap/tiup/pull/1926), [@nexustar](https://github.com/nexustar))
+
+## [1.10.1] 2022-06-09
+
+### Fix
+
+- Fix SSH login error when identity file is specified for non-root user in `tiup-cluster` ([#1914](https://github.com/pingcap/tiup/pull/1914), [@srstack](https://github.com/srstack))
+
+## [1.10.0] 2022-06-08
+
+### New Features
+
+- Add support of backup and restore the cluster metadata for `tiup-cluster` and `tiup-dm` ([#1801](https://github.com/pingcap/tiup/pull/1801), [@nexustar](https://github.com/nexustar))
+- Add `history` command for `tiup` to display component execution records ([#1808](https://github.com/pingcap/tiup/pull/1808), [@srstack](https://github.com/srstack))
+- Add support of trying to disable swap when `check --apply` in `tiup-cluster` ([#1803](https://github.com/pingcap/tiup/pull/1803), [@AstroProfundis](https://github.com/AstroProfundis))
+- Add Grafana URL in `display` output of `tiup-cluster` ([#1819](https://github.com/pingcap/tiup/pull/1819), [@Smityz](https://github.com/Smityz))
+- Add a `latest` alias for component versions when cloning repo with `tiup mirror clone` command ([#1835](https://github.com/pingcap/tiup/pull/1835), [@srstack](https://github.com/srstack))
+- Add Kylin Linux 10+ as supported in `check` result of `tiup-cluster` ([#1886](https://github.com/pingcap/tiup/pull/1886), [@srstack](https://github.com/srstack))
+- Add support of completion of cluster name with Tab button for `tiup-cluster` ([#1891](https://github.com/pingcap/tiup/pull/1891), [@nexustar](https://github.com/nexustar))
+- Add support of checking timezone consistency among servers in `check` command of `tiup-cluster` ([#1890](https://github.com/pingcap/tiup/pull/1890), [@nexustar](https://github.com/nexustar))
+- Add support of deploying on RHEL 8 in `tiup-cluster` ([#1896](https://github.com/pingcap/tiup/pull/1896), [@nexustar](https://github.com/nexustar))
+- Add support of specifing custom key directory when rotating `root.json` in `tiup mirror` command ([#1848](https://github.com/pingcap/tiup/pull/1848), [@AstroProfundis](https://github.com/AstroProfundis))
+
+### Fixes
+
+- Fix typo in error message of `tiup-bench` ([#1824](https://github.com/pingcap/tiup/pull/1824), [@Mini256](https://github.com/Mini256))
+- Fix duplicated component path printed in `tiup` ([#1832](https://github.com/pingcap/tiup/pull/1832), [@nexustar](https://github.com/nexustar))
+- Fix outdated URL in topology example for `tiup-cluster` ([#1840](https://github.com/pingcap/tiup/pull/1840), [@srstack](https://github.com/srstack))
+- Fix DM startup scripts to bind `0.0.0.0` instead of host IP ([#1845](https://github.com/pingcap/tiup/pull/1845), [@nexustar](https://github.com/nexustar))
+- Fix incorrect blackbox_exporter, node_exporter and Grafana status monitor for TLS enabled clusters ([#1853](https://github.com/pingcap/tiup/pull/1853), [@srstack](https://github.com/srstack))
+- Fix priority of tag argument for `tiup-playground` ([#1869](https://github.com/pingcap/tiup/pull/1869), [@nexustar](https://github.com/nexustar))
+- Fix `TIUP_HOME` not loaded correctly on initializing metadata for some components ([#1885](https://github.com/pingcap/tiup/pull/1885), [@srstack](https://github.com/srstack))
+- Fix concurrent error in `display` command of `tiup-cluster` ([#1895](https://github.com/pingcap/tiup/pull/1895), [@srstack](https://github.com/srstack))
+- Fix incorrect workload loading in `tiup-bench` ([#1827](https://github.com/pingcap/tiup/pull/1827), [@Smityz](https://github.com/Smityz))
+- Fix OS type detection for hybrid platform deployment in `tiup-cluster` ([#1753](https://github.com/pingcap/tiup/pull/1753), [@srstack](https://github.com/srstack))
+
+### Improvements
+
+- Add notes about default workload values in help message of `tiup-bench` ([#1807](https://github.com/pingcap/tiup/pull/1807), [@Smityz](https://github.com/Smityz))
+- Refactor `-h/--help` handling to avoid conflicts with component arguments ([#1831](https://github.com/pingcap/tiup/pull/1831), [@nexustar](https://github.com/nexustar))
+- Refactor version specific handlings of TiDB cluster to a dedicated Go package ([#1873](https://github.com/pingcap/tiup/pull/1873), [@nexustar](https://github.com/nexustar))
+- Improve integrate tests for `tiup-cluster` ([#1882](https://github.com/pingcap/tiup/pull/1882), [@nexustar](https://github.com/nexustar))
+- Adjust help information of `edit-cluster` command for `tiup-cluster` and `tiup-dm` ([#1900](https://github.com/pingcap/tiup/pull/1900), [@nexustar](https://github.com/nexustar))
+- Update configuration example of monitoring components ([#1818](https://github.com/pingcap/tiup/pull/1818), [@glkappe](https://github.com/glkappe); [#1843](https://github.com/pingcap/tiup/pull/1843), [@nexustar](https://github.com/nexustar))
+- Improve cluster shutting down process in `playground` ([#1893](https://github.com/pingcap/tiup/pull/1893), [@nexustar](https://github.com/nexustar))
+
+## [1.9.6] 2022-05-20
+
+### Fix
+
+- Fix incorrect output of `display` in certain circumstances for `tiup-cluster` ([#1889](https://github.com/pingcap/tiup/pull/1889), [@srstack](https://github.com/srstack))
+
+## [1.9.5] 2022-05-10
+
+### Fixes
+
+- Fix `prune` incorrectly destroy pump/drainer node before they become `Tombstone` in `tiup-cluster` ([#1851](https://github.com/pingcap/tiup/pull/1851), [@srstack](https://github.com/srstack))
+- Report error when multiple pump nodes with the same `ip:port` found in `tiup-cluster` ([#1856](https://github.com/pingcap/tiup/pull/1856), [@srstack](https://github.com/srstack))
+- Get node status of pump/drainer from PD in `tiup-cluster` ([#1862](https://github.com/pingcap/tiup/pull/1862), [@srstack](https://github.com/srstack))
+
+### Improvements
+
+- Check node status concurrently and support custom timeout for `display` in `tiup-cluster` ([#1867](https://github.com/pingcap/tiup/pull/1867), [@srstack](https://github.com/srstack))
+- Support `tidb-lightning` in `tiup-ctl` ([#1863](https://github.com/pingcap/tiup/pull/1863), [@nexustar](https://github.com/nexustar))
+
 ## [1.9.4] 2022-04-12
 
-## Fixes
+### Fixes
 
 - Fix copy error when file is read only in `tiup-playground` ([#1816](https://github.com/pingcap/tiup/pull/1816), [@breeswish](https://github.com/breeswish))
 - Fix `data-dir` not properly handled for TiCDC v6.0.0 in `tiup-cluster` ([#1838](https://github.com/pingcap/tiup/pull/1838), [@overvenus](https://github.com/overvenus))
@@ -20,7 +445,7 @@ TiUP Changelog
 ### Improvements
 
 - Support cleanup audit log files for `tiup-cluster` and `tiup-dm` ([#1780](https://github.com/pingcap/tiup/pull/1780), [@srstack](https://github.com/srstack))
-- Add anonymous login example to Grafana configuration templates ([#1785](https://github.com/pingcap/tiup/pull/1785)[@sunzhaoyang](https://github.com/sunzhaoyang))
+- Add anonymous login example to Grafana configuration templates ([#1785](https://github.com/pingcap/tiup/pull/1785), [@sunzhaoyang](https://github.com/sunzhaoyang))
 
 ## [1.9.2] 2022-03-10
 

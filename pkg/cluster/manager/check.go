@@ -33,6 +33,7 @@ import (
 	logprinter "github.com/pingcap/tiup/pkg/logger/printer"
 	"github.com/pingcap/tiup/pkg/set"
 	"github.com/pingcap/tiup/pkg/tui"
+	"github.com/pingcap/tiup/pkg/utils"
 )
 
 // CheckOptions contains the options for check command
@@ -123,7 +124,14 @@ func (m *Manager) CheckCluster(clusterOrTopoName, scaleoutTopo string, opt Check
 		}
 	}
 
-	if err := m.fillHost(sshConnProps, sshProxyProps, &topo, &gOpt, opt.User); err != nil {
+	var sudo bool
+	if topo.BaseTopo().GlobalOptions.SystemdMode == spec.UserMode {
+		sudo = false
+	} else {
+		sudo = opt.User != "root"
+	}
+
+	if err := m.fillHost(sshConnProps, sshProxyProps, &topo, &gOpt, opt.User, sudo); err != nil {
 		return err
 	}
 
@@ -136,10 +144,14 @@ func (m *Manager) CheckCluster(clusterOrTopoName, scaleoutTopo string, opt Check
 		if err := checkConflict(m, clusterOrTopoName, mergedTopo); err != nil {
 			return err
 		}
-	}
 
-	if err := checkSystemInfo(ctx, sshConnProps, sshProxyProps, &topo, &gOpt, &opt); err != nil {
-		return err
+		if err := checkSystemInfo(ctx, sshConnProps, sshProxyProps, &topo, &gOpt, &opt, mergedTopo.(*spec.Specification)); err != nil {
+			return err
+		}
+	} else {
+		if err := checkSystemInfo(ctx, sshConnProps, sshProxyProps, &topo, &gOpt, &opt, &topo); err != nil {
+			return err
+		}
 	}
 
 	if !opt.ExistCluster {
@@ -166,24 +178,33 @@ func checkSystemInfo(
 	topo *spec.Specification,
 	gOpt *operator.Options,
 	opt *CheckOptions,
+	fullTopo *spec.Specification,
 ) error {
 	var (
-		collectTasks  []*task.StepDisplay
-		checkSysTasks []*task.StepDisplay
-		cleanTasks    []*task.StepDisplay
-		applyFixTasks []*task.StepDisplay
-		downloadTasks []*task.StepDisplay
+		collectTasks       []*task.StepDisplay
+		checkTimeZoneTasks []*task.StepDisplay
+		checkSysTasks      []*task.StepDisplay
+		cleanTasks         []*task.StepDisplay
+		applyFixTasks      []*task.StepDisplay
+		downloadTasks      []*task.StepDisplay
 	)
 	logger := ctx.Value(logprinter.ContextKeyLogger).(*logprinter.Logger)
-	insightVer := spec.TiDBComponentVersion(spec.ComponentCheckCollector, "")
+	insightVer := ""
 
 	uniqueHosts := map[string]int{}             // host -> ssh-port
 	uniqueArchList := make(map[string]struct{}) // map["os-arch"]{}
+	insightNodes := []spec.Instance{}
 
 	roleFilter := set.NewStringSet(gOpt.Roles...)
 	nodeFilter := set.NewStringSet(gOpt.Nodes...)
-	components := topo.ComponentsByUpdateOrder()
+	components := topo.ComponentsByStartOrder()
 	components = operator.FilterComponent(components, roleFilter)
+
+	systemdDir := "/etc/systemd/system/"
+	systemdMode := topo.BaseTopo().GlobalOptions.SystemdMode
+	if systemdMode == spec.UserMode {
+		systemdDir = "~/.config/systemd/user/"
+	}
 
 	for _, comp := range components {
 		instances := operator.FilterInstance(comp.Instances(), nodeFilter)
@@ -210,40 +231,38 @@ func checkSystemInfo(
 			// checks that applies to each instance
 			if opt.ExistCluster {
 				t1 = t1.CheckSys(
-					inst.GetHost(),
+					inst.GetManageHost(),
 					inst.DeployDir(),
 					task.CheckTypePermission,
 					topo,
 					opt.Opr,
 				)
-			}
-
-			if !opt.ExistCluster {
+			} else {
 				t1 = t1.
 					CheckSys(
-						inst.GetHost(),
+						inst.GetManageHost(),
 						inst.DeployDir(),
 						task.ChecktypeIsExist,
 						topo,
 						opt.Opr,
 					).
 					CheckSys(
-						inst.GetHost(),
+						inst.GetManageHost(),
 						inst.DataDir(),
 						task.ChecktypeIsExist,
 						topo,
 						opt.Opr,
 					).
 					CheckSys(
-						inst.GetHost(),
+						inst.GetManageHost(),
 						inst.LogDir(),
 						task.ChecktypeIsExist,
 						topo,
 						opt.Opr,
 					).
 					CheckSys(
-						inst.GetHost(),
-						fmt.Sprintf("/etc/systemd/system/%s-%d.service", inst.ComponentName(), inst.GetPort()),
+						inst.GetManageHost(),
+						fmt.Sprintf("%s%s-%d.service", systemdDir, inst.ComponentName(), inst.GetPort()),
 						task.ChecktypeIsExist,
 						topo,
 						opt.Opr,
@@ -256,7 +275,7 @@ func checkSystemInfo(
 				// build checking tasks
 				t1 = t1.
 					CheckSys(
-						inst.GetHost(),
+						inst.GetManageHost(),
 						dataDir,
 						task.CheckTypeFIO,
 						topo,
@@ -265,7 +284,7 @@ func checkSystemInfo(
 
 				if opt.ExistCluster {
 					t1 = t1.CheckSys(
-						inst.GetHost(),
+						inst.GetManageHost(),
 						dataDir,
 						task.CheckTypePermission,
 						topo,
@@ -274,164 +293,198 @@ func checkSystemInfo(
 				}
 			}
 
-			// checks that applies to each host
-			if _, found := uniqueHosts[inst.GetHost()]; !found {
-				uniqueHosts[inst.GetHost()] = inst.GetSSHPort()
-				// build system info collecting tasks
-				t2 := task.NewBuilder(logger).
-					RootSSH(
-						inst.GetHost(),
-						inst.GetSSHPort(),
-						opt.User,
-						s.Password,
-						s.IdentityFile,
-						s.IdentityFilePassphrase,
-						gOpt.SSHTimeout,
-						gOpt.OptTimeout,
-						gOpt.SSHProxyHost,
-						gOpt.SSHProxyPort,
-						gOpt.SSHProxyUser,
-						p.Password,
-						p.IdentityFile,
-						p.IdentityFilePassphrase,
-						gOpt.SSHProxyTimeout,
-						gOpt.SSHType,
-						topo.GlobalOptions.SSHType,
-					).
-					Mkdir(opt.User, inst.GetHost(), filepath.Join(task.CheckToolsPathDir, "bin")).
-					CopyComponent(
-						spec.ComponentCheckCollector,
-						inst.OS(),
-						inst.Arch(),
-						insightVer,
-						"", // use default srcPath
-						inst.GetHost(),
-						task.CheckToolsPathDir,
-					).
-					Shell(
-						inst.GetHost(),
-						filepath.Join(task.CheckToolsPathDir, "bin", "insight"),
-						"",
-						false,
-					).
-					BuildAsStep(fmt.Sprintf("  - Getting system info of %s:%d", inst.GetHost(), inst.GetSSHPort()))
-				collectTasks = append(collectTasks, t2)
-
-				// build checking tasks
-				t1 = t1.
-					// check for general system info
-					CheckSys(
-						inst.GetHost(),
-						"",
-						task.CheckTypeSystemInfo,
-						topo,
-						opt.Opr,
-					).
-					CheckSys(
-						inst.GetHost(),
-						"",
-						task.CheckTypePartitions,
-						topo,
-						opt.Opr,
-					).
-					// check for system limits
-					Shell(
-						inst.GetHost(),
-						"cat /etc/security/limits.conf",
-						"",
-						false,
-					).
-					CheckSys(
-						inst.GetHost(),
-						"",
-						task.CheckTypeSystemLimits,
-						topo,
-						opt.Opr,
-					).
-					// check for kernel params
-					Shell(
-						inst.GetHost(),
-						"sysctl -a",
-						"",
-						true,
-					).
-					CheckSys(
-						inst.GetHost(),
-						"",
-						task.CheckTypeSystemConfig,
-						topo,
-						opt.Opr,
-					).
-					// check for needed system service
-					CheckSys(
-						inst.GetHost(),
-						"",
-						task.CheckTypeService,
-						topo,
-						opt.Opr,
-					).
-					// check for needed packages
-					CheckSys(
-						inst.GetHost(),
-						"",
-						task.CheckTypePackage,
-						topo,
-						opt.Opr,
-					)
-
-				if !opt.ExistCluster {
-					t1 = t1.
-						// check for listening port
-						Shell(
-							inst.GetHost(),
-							"ss -lnt",
-							"",
-							false,
-						).
-						CheckSys(
-							inst.GetHost(),
-							"",
-							task.CheckTypePort,
-							topo,
-							opt.Opr,
-						)
-				}
-			}
-
 			checkSysTasks = append(
 				checkSysTasks,
-				t1.BuildAsStep(fmt.Sprintf("  - Checking node %s", inst.GetHost())),
+				t1.BuildAsStep(fmt.Sprintf("  - Checking node %s", inst.GetManageHost())),
 			)
 
-			t3 := task.NewBuilder(logger).
-				RootSSH(
-					inst.GetHost(),
-					inst.GetSSHPort(),
-					opt.User,
-					s.Password,
-					s.IdentityFile,
-					s.IdentityFilePassphrase,
-					gOpt.SSHTimeout,
-					gOpt.OptTimeout,
-					gOpt.SSHProxyHost,
-					gOpt.SSHProxyPort,
-					gOpt.SSHProxyUser,
-					p.Password,
-					p.IdentityFile,
-					p.IdentityFilePassphrase,
-					gOpt.SSHProxyTimeout,
-					gOpt.SSHType,
-					topo.GlobalOptions.SSHType,
-				).
-				Rmdir(inst.GetHost(), task.CheckToolsPathDir).
-				BuildAsStep(fmt.Sprintf("  - Cleanup check files on %s:%d", inst.GetHost(), inst.GetSSHPort()))
-			cleanTasks = append(cleanTasks, t3)
+			if _, found := uniqueHosts[inst.GetManageHost()]; !found {
+				uniqueHosts[inst.GetManageHost()] = inst.GetSSHPort()
+				insightNodes = append(insightNodes, inst)
+			}
 		}
+	}
+
+	existPD := (&spec.PDComponent{Topology: fullTopo}).Instances()
+	if len(existPD) < 1 {
+		return fmt.Errorf("cannot find PD in exist cluster")
+	}
+	if _, found := uniqueHosts[existPD[0].GetManageHost()]; !found {
+		insightNodes = append(insightNodes, existPD[0])
+	}
+
+	for _, inst := range insightNodes {
+		// build system info collecting tasks
+		t2 := task.NewBuilder(logger).
+			RootSSH(
+				inst.GetManageHost(),
+				inst.GetSSHPort(),
+				opt.User,
+				s.Password,
+				s.IdentityFile,
+				s.IdentityFilePassphrase,
+				gOpt.SSHTimeout,
+				gOpt.OptTimeout,
+				gOpt.SSHProxyHost,
+				gOpt.SSHProxyPort,
+				gOpt.SSHProxyUser,
+				p.Password,
+				p.IdentityFile,
+				p.IdentityFilePassphrase,
+				gOpt.SSHProxyTimeout,
+				gOpt.SSHType,
+				topo.GlobalOptions.SSHType,
+				opt.User != "root" && systemdMode != spec.UserMode,
+			).
+			Mkdir(opt.User, inst.GetManageHost(), systemdMode != spec.UserMode, filepath.Join(task.CheckToolsPathDir, "bin")).
+			CopyComponent(
+				spec.ComponentCheckCollector,
+				inst.OS(),
+				inst.Arch(),
+				insightVer,
+				"", // use default srcPath
+				inst.GetManageHost(),
+				task.CheckToolsPathDir,
+			).
+			Shell(
+				inst.GetManageHost(),
+				filepath.Join(task.CheckToolsPathDir, "bin", "insight"),
+				"",
+				false,
+			).
+			BuildAsStep("  - Getting system info of " + utils.JoinHostPort(inst.GetManageHost(), inst.GetSSHPort()))
+		collectTasks = append(collectTasks, t2)
+
+		t3 := task.NewBuilder(logger).
+			RootSSH(
+				inst.GetManageHost(),
+				inst.GetSSHPort(),
+				opt.User,
+				s.Password,
+				s.IdentityFile,
+				s.IdentityFilePassphrase,
+				gOpt.SSHTimeout,
+				gOpt.OptTimeout,
+				gOpt.SSHProxyHost,
+				gOpt.SSHProxyPort,
+				gOpt.SSHProxyUser,
+				p.Password,
+				p.IdentityFile,
+				p.IdentityFilePassphrase,
+				gOpt.SSHProxyTimeout,
+				gOpt.SSHType,
+				topo.GlobalOptions.SSHType,
+				opt.User != "root" && systemdMode != spec.UserMode,
+			).
+			Rmdir(inst.GetManageHost(), task.CheckToolsPathDir).
+			BuildAsStep("  - Cleanup check files on " + utils.JoinHostPort(inst.GetManageHost(), inst.GetSSHPort()))
+		cleanTasks = append(cleanTasks, t3)
+	}
+
+	for host := range uniqueHosts {
+		t4 := task.NewBuilder(logger).
+			// check for time zone
+			CheckSys(
+				host,
+				"",
+				task.CheckTypeTimeZone,
+				fullTopo,
+				opt.Opr,
+			)
+		checkTimeZoneTasks = append(
+			checkTimeZoneTasks,
+			t4.BuildAsStep(fmt.Sprintf("  - Checking node %s", host)),
+		)
+
+		t1 := task.NewBuilder(logger).
+			// check for general system info
+			CheckSys(
+				host,
+				"",
+				task.CheckTypeSystemInfo,
+				topo,
+				opt.Opr,
+			).
+			CheckSys(
+				host,
+				"",
+				task.CheckTypePartitions,
+				topo,
+				opt.Opr,
+			).
+			// check for system limits
+			Shell(
+				host,
+				"cat /etc/security/limits.conf",
+				"",
+				false,
+			).
+			CheckSys(
+				host,
+				"",
+				task.CheckTypeSystemLimits,
+				topo,
+				opt.Opr,
+			).
+			// check for kernel params
+			Shell(
+				host,
+				"sysctl -a",
+				"",
+				systemdMode != spec.UserMode,
+			).
+			CheckSys(
+				host,
+				"",
+				task.CheckTypeSystemConfig,
+				topo,
+				opt.Opr,
+			).
+			// check for needed system service
+			CheckSys(
+				host,
+				"",
+				task.CheckTypeService,
+				topo,
+				opt.Opr,
+			).
+			// check for needed packages
+			CheckSys(
+				host,
+				"",
+				task.CheckTypePackage,
+				topo,
+				opt.Opr,
+			)
+
+		if !opt.ExistCluster {
+			t1 = t1.
+				// check for listening port
+				Shell(
+					host,
+					"ss -lnt",
+					"",
+					false,
+				).
+				CheckSys(
+					host,
+					"",
+					task.CheckTypePort,
+					topo,
+					opt.Opr,
+				)
+		}
+
+		checkSysTasks = append(
+			checkSysTasks,
+			t1.BuildAsStep(fmt.Sprintf("  - Checking node %s", host)),
+		)
 	}
 
 	t := task.NewBuilder(logger).
 		ParallelStep("+ Download necessary tools", false, downloadTasks...).
 		ParallelStep("+ Collect basic system information", false, collectTasks...).
+		ParallelStep("+ Check time zone", false, checkTimeZoneTasks...).
 		ParallelStep("+ Check system requirements", false, checkSysTasks...).
 		ParallelStep("+ Cleanup check files", false, cleanTasks...).
 		Build()
@@ -469,8 +522,9 @@ func checkSystemInfo(
 				gOpt.SSHProxyTimeout,
 				gOpt.SSHType,
 				topo.GlobalOptions.SSHType,
+				opt.User != "root" && systemdMode != spec.UserMode,
 			)
-		res, err := handleCheckResults(ctx, host, opt, tf)
+		res, err := handleCheckResults(ctx, host, opt, tf, string(topo.BaseTopo().GlobalOptions.SystemdMode))
 		if err != nil {
 			continue
 		}
@@ -523,7 +577,7 @@ func checkSystemInfo(
 }
 
 // handleCheckResults parses the result of checks
-func handleCheckResults(ctx context.Context, host string, opt *CheckOptions, t *task.Builder) ([]HostCheckResult, error) {
+func handleCheckResults(ctx context.Context, host string, opt *CheckOptions, t *task.Builder, systemdMode string) ([]HostCheckResult, error) {
 	rr, _ := ctxt.GetInner(ctx).GetCheckResults(host)
 	if len(rr) < 1 {
 		return nil, fmt.Errorf("no check results found for %s", host)
@@ -547,7 +601,7 @@ func handleCheckResults(ctx context.Context, host string, opt *CheckOptions, t *
 				items = append(items, item)
 				continue
 			}
-			msg, err := fixFailedChecks(host, r, t)
+			msg, err := fixFailedChecks(host, r, t, systemdMode)
 			if err != nil {
 				ctx.Value(logprinter.ContextKeyLogger).(*logprinter.Logger).
 					Debugf("%s: fail to apply fix to %s (%s)", host, r.Name, err)
@@ -589,8 +643,9 @@ func formatHostCheckResults(results []HostCheckResult) [][]string {
 }
 
 // fixFailedChecks tries to automatically apply changes to fix failed checks
-func fixFailedChecks(host string, res *operator.CheckResult, t *task.Builder) (string, error) {
+func fixFailedChecks(host string, res *operator.CheckResult, t *task.Builder, systemdMode string) (string, error) {
 	msg := ""
+	sudo := systemdMode != string(spec.UserMode)
 	switch res.Name {
 	case operator.CheckNameSysService:
 		if strings.Contains(res.Msg, "not found") {
@@ -600,21 +655,21 @@ func fixFailedChecks(host string, res *operator.CheckResult, t *task.Builder) (s
 		if len(fields) < 2 {
 			return "", fmt.Errorf("can not perform action of service, %s", res.Msg)
 		}
-		t.SystemCtl(host, fields[1], fields[0], false, false)
+		t.SystemCtl(host, fields[1], fields[0], false, false, systemdMode)
 		msg = fmt.Sprintf("will try to '%s'", color.HiBlueString(res.Msg))
 	case operator.CheckNameSysctl:
 		fields := strings.Fields(res.Msg)
 		if len(fields) < 3 {
 			return "", fmt.Errorf("can not set kernel parameter, %s", res.Msg)
 		}
-		t.Sysctl(host, fields[0], fields[2])
+		t.Sysctl(host, fields[0], fields[2], sudo)
 		msg = fmt.Sprintf("will try to set '%s'", color.HiBlueString(res.Msg))
 	case operator.CheckNameLimits:
 		fields := strings.Fields(res.Msg)
 		if len(fields) < 4 {
 			return "", fmt.Errorf("can not set limits, %s", res.Msg)
 		}
-		t.Limit(host, fields[0], fields[1], fields[2], fields[3])
+		t.Limit(host, fields[0], fields[1], fields[2], fields[3], sudo)
 		msg = fmt.Sprintf("will try to set '%s'", color.HiBlueString(res.Msg))
 	case operator.CheckNameSELinux:
 		t.Shell(host,
@@ -624,13 +679,13 @@ func fixFailedChecks(host string, res *operator.CheckResult, t *task.Builder) (s
 				"setenforce 0",
 			),
 			"",
-			true)
+			sudo)
 		msg = fmt.Sprintf("will try to %s, reboot might be needed", color.HiBlueString("disable SELinux"))
 	case operator.CheckNameTHP:
 		t.Shell(host,
-			fmt.Sprintf(`if [ -d %[1]s ]; then echo never > %[1]s/defrag && echo never > %[1]s/enabled; fi`, "/sys/kernel/mm/transparent_hugepage"),
+			fmt.Sprintf(`if [ -d %[1]s ]; then echo never > %[1]s/enabled; fi`, "/sys/kernel/mm/transparent_hugepage"),
 			"",
-			true)
+			sudo)
 		msg = fmt.Sprintf("will try to %s, please check again after reboot", color.HiBlueString("disable THP"))
 	case operator.CheckNameSwap:
 		// not applying swappiness setting here, it should be fixed
@@ -638,7 +693,7 @@ func fixFailedChecks(host string, res *operator.CheckResult, t *task.Builder) (s
 		// t.Sysctl(host, "vm.swappiness", "0")
 		t.Shell(host,
 			"swapoff -a || exit 0", // ignore failure
-			"", true,
+			"", sudo,
 		)
 		msg = "will try to disable swap, please also check /etc/fstab manually"
 	default:
@@ -657,7 +712,7 @@ func (m *Manager) checkRegionsInfo(clusterName string, topo *spec.Specification,
 	}
 	pdClient := api.NewPDClient(
 		context.WithValue(context.TODO(), logprinter.ContextKeyLogger, m.logger),
-		topo.GetPDList(),
+		topo.GetPDListWithManageHost(),
 		time.Second*time.Duration(gOpt.APITimeout),
 		tlsConfig,
 	)

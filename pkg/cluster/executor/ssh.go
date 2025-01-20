@@ -143,7 +143,7 @@ func (e *EasySSHExecutor) Execute(ctx context.Context, cmd string, sudo bool, ti
 	}
 
 	// set a basic PATH in case it's empty on login
-	cmd = fmt.Sprintf("PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin %s", cmd)
+	cmd = fmt.Sprintf("PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin; %s", cmd)
 
 	if e.Locale != "" {
 		cmd = fmt.Sprintf("export LANG=%s; %s", e.Locale, cmd)
@@ -182,6 +182,7 @@ func (e *EasySSHExecutor) Execute(ctx context.Context, cmd string, sudo bool, ti
 					e.Config.Server,
 					color.YellowString(output)))
 		}
+
 		return []byte(stdout), []byte(stderr), baseErr
 	}
 
@@ -217,6 +218,10 @@ func (e *EasySSHExecutor) Transfer(ctx context.Context, src, dst string, downloa
 	defer client.Close()
 	defer session.Close()
 
+	err = utils.MkdirAll(filepath.Dir(dst), 0755)
+	if err != nil {
+		return nil
+	}
 	return ScpDownload(session, client, src, dst, limit, compress)
 }
 
@@ -379,7 +384,7 @@ func (e *NativeSSHExecutor) Transfer(ctx context.Context, src, dst string, downl
 
 	if download {
 		targetPath := filepath.Dir(dst)
-		if err := utils.CreateDir(targetPath); err != nil {
+		if err := utils.MkdirAll(targetPath, 0755); err != nil {
 			return err
 		}
 		args = append(args, fmt.Sprintf("%s@%s:%s", e.Config.User, e.Config.Host, src), dst)

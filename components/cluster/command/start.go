@@ -23,6 +23,7 @@ import (
 	"github.com/pingcap/tiup/pkg/cluster/task"
 	"github.com/pingcap/tiup/pkg/crypto/rand"
 	"github.com/pingcap/tiup/pkg/proxy"
+	"github.com/pingcap/tiup/pkg/utils"
 	"github.com/spf13/cobra"
 
 	// for sql/driver
@@ -80,6 +81,14 @@ func newStartCmd() *cobra.Command {
 			}
 			return nil
 		},
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			switch len(args) {
+			case 0:
+				return shellCompGetClusterName(cm, toComplete)
+			default:
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+		},
 	}
 
 	cmd.Flags().BoolVar(&initPasswd, "init", false, "Initialize a secure root password for the database")
@@ -108,7 +117,7 @@ func initPassword(clusterName string) (string, error) {
 	var lastErr error
 	for _, spec := range metadata.Topology.TiDBServers {
 		spec := spec
-		endpoint := fmt.Sprintf("%s:%d", spec.Host, spec.Port)
+		endpoint := utils.JoinHostPort(spec.Host, spec.Port)
 		if tcpProxy != nil {
 			closeC := tcpProxy.Run([]string{endpoint})
 			defer tcpProxy.Close(closeC)

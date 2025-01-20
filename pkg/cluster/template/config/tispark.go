@@ -15,17 +15,17 @@ package config
 
 import (
 	"bytes"
-	"os"
 	"path/filepath"
 	"text/template"
 
 	"github.com/pingcap/tiup/embed"
+	"github.com/pingcap/tiup/pkg/utils"
 )
 
 // TiSparkConfig represent the data to generate TiSpark configs
 type TiSparkConfig struct {
 	TiSparkMasters string
-	CustomFields   map[string]interface{}
+	CustomFields   map[string]any
 	Endpoints      []string
 }
 
@@ -41,7 +41,7 @@ func (c *TiSparkConfig) WithMasters(masters string) *TiSparkConfig {
 }
 
 // WithCustomFields sets custom setting fields
-func (c *TiSparkConfig) WithCustomFields(m map[string]interface{}) *TiSparkConfig {
+func (c *TiSparkConfig) WithCustomFields(m map[string]any) *TiSparkConfig {
 	c.CustomFields = m
 	return c
 }
@@ -62,7 +62,7 @@ func (c *TiSparkConfig) ConfigToFile(file string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(file, config, 0755)
+	return utils.WriteFile(file, config, 0755)
 }
 
 // ConfigWithTemplate parses the template file

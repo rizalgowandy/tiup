@@ -11,6 +11,7 @@ import (
 	"github.com/pingcap/tiup/pkg/cluster/spec"
 	"github.com/pingcap/tiup/pkg/proxy"
 	"github.com/pingcap/tiup/pkg/set"
+	"github.com/pingcap/tiup/pkg/utils"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -67,7 +68,7 @@ func (u *UpdateTopology) Execute(ctx context.Context) error {
 
 	for _, instance := range (&spec.TiDBComponent{Topology: topo}).Instances() {
 		if deleted.Exist(instance.ID()) {
-			ops = append(ops, clientv3.OpDelete(fmt.Sprintf("/topology/tidb/%s:%d", instance.GetHost(), instance.GetPort()), clientv3.WithPrefix()))
+			ops = append(ops, clientv3.OpDelete("/topology/tidb/"+utils.JoinHostPort(instance.GetHost(), instance.GetPort()), clientv3.WithPrefix()))
 		}
 	}
 
@@ -100,7 +101,8 @@ type componentTopology struct {
 }
 
 // updateInstancesAndOps receives alertmanager, prometheus and grafana instance list, if the list has
-//  no member or all deleted, it will add a `OpDelete` in ops, otherwise it will push all current not deleted instances into instance list.
+//
+//	no member or all deleted, it will add a `OpDelete` in ops, otherwise it will push all current not deleted instances into instance list.
 func updateInstancesAndOps(ops []clientv3.Op, ins []spec.Instance, deleted set.StringSet, instances []spec.Instance, componentName string) ([]clientv3.Op, []spec.Instance) {
 	var currentInstances []spec.Instance
 	for _, instance := range instances {
@@ -119,7 +121,8 @@ func updateInstancesAndOps(ops []clientv3.Op, ins []spec.Instance, deleted set.S
 }
 
 // updateTopologyOp receive an alertmanager, prometheus or grafana instance, and return an operation
-//  for update it's topology.
+//
+//	for update it's topology.
 func updateTopologyOp(instance spec.Instance) (*clientv3.Op, error) {
 	switch compName := instance.ComponentName(); compName {
 	case spec.ComponentAlertmanager, spec.ComponentPrometheus, spec.ComponentGrafana:

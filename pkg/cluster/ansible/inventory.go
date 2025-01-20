@@ -24,6 +24,7 @@ import (
 	"github.com/pingcap/tiup/pkg/cluster/executor"
 	"github.com/pingcap/tiup/pkg/cluster/spec"
 	logprinter "github.com/pingcap/tiup/pkg/logger/printer"
+	"github.com/pingcap/tiup/pkg/tidbver"
 	"github.com/relex/aini"
 	"gopkg.in/ini.v1"
 	"gopkg.in/yaml.v2"
@@ -132,6 +133,7 @@ func ParseAndImportInventory(ctx context.Context, dir, ansCfgFile string, clsMet
 	return defaults.Set(clsMeta)
 }
 
+//revive:disable
 func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.ClusterMeta, inv *aini.InventoryData) error {
 	logger := ctx.Value(logprinter.ContextKeyLogger).(*logprinter.Logger)
 
@@ -177,7 +179,7 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			}
 			tmpIns := &spec.TiDBSpec{
 				Host:     host,
-				SSHPort:  getHostPort(srv, ansCfg),
+				SSHPort:  GetHostPort(srv, ansCfg),
 				Imported: true,
 				Arch:     "amd64",
 				OS:       "linux",
@@ -221,7 +223,7 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			}
 			tmpIns := &spec.TiKVSpec{
 				Host:     host,
-				SSHPort:  getHostPort(srv, ansCfg),
+				SSHPort:  GetHostPort(srv, ansCfg),
 				Imported: true,
 				Arch:     "amd64",
 				OS:       "linux",
@@ -268,7 +270,7 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			}
 			tmpIns := &spec.PDSpec{
 				Host:     host,
-				SSHPort:  getHostPort(srv, ansCfg),
+				SSHPort:  GetHostPort(srv, ansCfg),
 				Imported: true,
 				Arch:     "amd64",
 				OS:       "linux",
@@ -318,7 +320,7 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			}
 			tmpIns := &spec.TiFlashSpec{
 				Host:     host,
-				SSHPort:  getHostPort(srv, ansCfg),
+				SSHPort:  GetHostPort(srv, ansCfg),
 				Imported: true,
 				Arch:     "amd64",
 				OS:       "linux",
@@ -327,8 +329,10 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			if tcpPort, ok := grpVars["tcp_port"]; ok {
 				tmpIns.TCPPort, _ = strconv.Atoi(tcpPort)
 			}
-			if httpPort, ok := grpVars["http_port"]; ok {
-				tmpIns.HTTPPort, _ = strconv.Atoi(httpPort)
+			if !tidbver.TiFlashNotNeedHTTPPortConfig(clsMeta.Version) {
+				if httpPort, ok := grpVars["http_port"]; ok {
+					tmpIns.HTTPPort, _ = strconv.Atoi(httpPort)
+				}
 			}
 			if flashServicePort, ok := grpVars["flash_service_port"]; ok {
 				tmpIns.FlashServicePort, _ = strconv.Atoi(flashServicePort)
@@ -347,8 +351,10 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			if tcpPort, ok := srv.Vars["tcp_port"]; ok {
 				tmpIns.TCPPort, _ = strconv.Atoi(tcpPort)
 			}
-			if httpPort, ok := srv.Vars["http_port"]; ok {
-				tmpIns.HTTPPort, _ = strconv.Atoi(httpPort)
+			if !tidbver.TiFlashNotNeedHTTPPortConfig(clsMeta.Version) {
+				if httpPort, ok := srv.Vars["http_port"]; ok {
+					tmpIns.HTTPPort, _ = strconv.Atoi(httpPort)
+				}
 			}
 			if flashServicePort, ok := srv.Vars["flash_service_port"]; ok {
 				tmpIns.FlashServicePort, _ = strconv.Atoi(flashServicePort)
@@ -397,7 +403,7 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			}
 			tmpIns := &spec.PrometheusSpec{
 				Host:     host,
-				SSHPort:  getHostPort(srv, ansCfg),
+				SSHPort:  GetHostPort(srv, ansCfg),
 				Imported: true,
 				Arch:     "amd64",
 				OS:       "linux",
@@ -444,7 +450,7 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			}
 			tmpIns := &spec.AlertmanagerSpec{
 				Host:     host,
-				SSHPort:  getHostPort(srv, ansCfg),
+				SSHPort:  GetHostPort(srv, ansCfg),
 				Imported: true,
 				Arch:     "amd64",
 				OS:       "linux",
@@ -485,7 +491,7 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			}
 			tmpIns := &spec.GrafanaSpec{
 				Host:     host,
-				SSHPort:  getHostPort(srv, ansCfg),
+				SSHPort:  GetHostPort(srv, ansCfg),
 				Imported: true,
 				Arch:     "amd64",
 				OS:       "linux",
@@ -529,7 +535,7 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			}
 			tmpIns := &spec.PumpSpec{
 				Host:     host,
-				SSHPort:  getHostPort(srv, ansCfg),
+				SSHPort:  GetHostPort(srv, ansCfg),
 				Imported: true,
 				Arch:     "amd64",
 				OS:       "linux",
@@ -572,7 +578,7 @@ func parseGroupVars(ctx context.Context, dir, ansCfgFile string, clsMeta *spec.C
 			}
 			tmpIns := &spec.DrainerSpec{
 				Host:     host,
-				SSHPort:  getHostPort(srv, ansCfg),
+				SSHPort:  GetHostPort(srv, ansCfg),
 				Imported: true,
 				Arch:     "amd64",
 				OS:       "linux",
@@ -617,15 +623,10 @@ func readGroupVars(dir, filename string) (map[string]string, error) {
 }
 
 // GetHostPort tries to read the SSH port of the host
-func GetHostPort(host *aini.Host, cfg *ini.File) int {
-	return getHostPort(host, cfg)
-}
-
-// getHostPort tries to read the SSH port of the host
 // 1. get from Host.Vars["ansible_port"]
 // 2. get from cfg.Section("defaults").Key("remote_port")
 // 3. get from srv.Port
-func getHostPort(srv *aini.Host, cfg *ini.File) int {
+func GetHostPort(srv *aini.Host, cfg *ini.File) int {
 	// parse per host config
 	// aini parse the port inline with hostnames (e.g., something like `host:22`)
 	// but not handling the "ansible_port" variable

@@ -483,9 +483,19 @@ func (r *V1Repository) updateComponentManifest(id string, withYanked bool) (*v1m
 // DownloadComponent downloads the component specified by item into local file,
 // the component will be removed if hash is not correct
 func (r *V1Repository) DownloadComponent(item *v1manifest.VersionItem, target string) error {
+	// make a tempdir such that every download will not inference each other
 	targetDir := filepath.Dir(target)
-	err := r.mirror.Download(item.URL, targetDir)
+	err := os.MkdirAll(targetDir, 0755)
 	if err != nil {
+		return errors.Trace(err)
+	}
+
+	targetDir, err = os.MkdirTemp(targetDir, "download")
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	if err := r.mirror.Download(item.URL, targetDir); err != nil {
 		return err
 	}
 
@@ -691,7 +701,7 @@ func (r *V1Repository) DownloadTiUP(targetDir string) error {
 		TargetDir: targetDir,
 		ID:        TiUPBinaryName,
 		Version:   "",
-		Force:     false,
+		Force:     true,
 	}
 	return r.UpdateComponents([]ComponentSpec{spec})
 }
@@ -718,8 +728,8 @@ func (r *V1Repository) UpdateComponentManifests() error {
 	return err
 }
 
-// FetchComponentManifest fetch the component manifest.
-func (r *V1Repository) FetchComponentManifest(id string, withYanked bool) (com *v1manifest.Component, err error) {
+// GetComponentManifest fetch the component manifest.
+func (r *V1Repository) GetComponentManifest(id string, withYanked bool) (com *v1manifest.Component, err error) {
 	err = r.ensureManifests()
 	if err != nil {
 		return nil, err
@@ -741,12 +751,12 @@ func (r *V1Repository) LocalComponentManifest(id string, withYanked bool) (com *
 			return componentManifest, nil
 		}
 	}
-	return r.FetchComponentManifest(id, withYanked)
+	return r.GetComponentManifest(id, withYanked)
 }
 
 // ComponentVersion returns version item of a component
 func (r *V1Repository) ComponentVersion(id, ver string, includeYanked bool) (*v1manifest.VersionItem, error) {
-	manifest, err := r.FetchComponentManifest(id, includeYanked)
+	manifest, err := r.GetComponentManifest(id, includeYanked)
 	if err != nil {
 		return nil, err
 	}
@@ -807,9 +817,6 @@ func findVersionFromManifest(id, constraint, platform string, manifest *v1manife
 	versions := manifest.VersionList(platform)
 	verList := make([]string, 0, len(versions))
 	for v := range versions {
-		if v == manifest.Nightly {
-			continue
-		}
 		verList = append(verList, v)
 	}
 	sort.Slice(verList, func(p, q int) bool {
@@ -846,7 +853,7 @@ func (r *V1Repository) ResolveComponentVersionWithPlatform(id, constraint, platf
 	default:
 		ver, err = findVersionFromManifest(id, constraint, platform, manifest)
 		if err != nil {
-			manifest, err = r.FetchComponentManifest(id, false)
+			manifest, err = r.GetComponentManifest(id, false)
 			if err != nil {
 				return "", err
 			}
@@ -866,7 +873,7 @@ func (r *V1Repository) ResolveComponentVersion(id, constraint string) (utils.Ver
 
 // LatestNightlyVersion returns the latest nightly version of specific component
 func (r *V1Repository) LatestNightlyVersion(id string) (utils.Version, *v1manifest.VersionItem, error) {
-	com, err := r.FetchComponentManifest(id, false)
+	com, err := r.GetComponentManifest(id, false)
 	if err != nil {
 		return "", nil, err
 	}
@@ -880,7 +887,7 @@ func (r *V1Repository) LatestNightlyVersion(id string) (utils.Version, *v1manife
 
 // LatestStableVersion returns the latest stable version of specific component
 func (r *V1Repository) LatestStableVersion(id string, withYanked bool) (utils.Version, *v1manifest.VersionItem, error) {
-	com, err := r.FetchComponentManifest(id, withYanked)
+	com, err := r.GetComponentManifest(id, withYanked)
 	if err != nil {
 		return "", nil, err
 	}

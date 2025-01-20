@@ -2,27 +2,30 @@ linters-settings:
   govet:
     enable:
       - nilness
+  errcheck:
+    exclude-functions:
+      - (*mime/multipart.Form).RemoveAll
+  gocritic:
+    disabled-checks:
+      - ifElseChain
 
 linters:
   disable-all: true
   enable:
     - bodyclose
-    - deadcode
     - errcheck
     - gofmt
     - goimports
     - gosimple
     - govet
     - ineffassign
-    - interfacer
+    # - interfacer
     - misspell
     - rowserrcheck
     - staticcheck
-    - structcheck
     - typecheck
     - unconvert
     - unused
-    - varcheck
     - whitespace
     - gocritic
     # - goconst

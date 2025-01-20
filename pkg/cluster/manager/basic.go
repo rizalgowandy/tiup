@@ -31,9 +31,9 @@ import (
 	"github.com/pingcap/tiup/pkg/cluster/task"
 	"github.com/pingcap/tiup/pkg/meta"
 	"github.com/pingcap/tiup/pkg/set"
+	"github.com/pingcap/tiup/pkg/tidbver"
 	"github.com/pingcap/tiup/pkg/tui"
 	"github.com/pingcap/tiup/pkg/utils"
-	"golang.org/x/mod/semver"
 )
 
 // EnableCluster enable/disable the service in a cluster
@@ -231,13 +231,26 @@ func (m *Manager) RestartCluster(name string, gOpt operator.Options, skipConfirm
 	}
 
 	if !skipConfirm {
-		if err := tui.PromptForConfirmOrAbortError(
-			fmt.Sprintf("Will restart the cluster %s with nodes: %s roles: %s.\nCluster will be unavailable\nDo you want to continue? [y/N]:",
-				color.HiYellowString(name),
-				color.HiYellowString(strings.Join(gOpt.Nodes, ",")),
-				color.HiYellowString(strings.Join(gOpt.Roles, ",")),
-			),
-		); err != nil {
+		var availabilityMessage string
+		var rolesToRestart string
+		var nodesToRestart string
+		if len(gOpt.Nodes) == 0 && len(gOpt.Roles) == 0 {
+			availabilityMessage = "Cluster will be unavailable"
+			rolesToRestart = "all"
+			nodesToRestart = "all"
+		} else {
+			availabilityMessage = fmt.Sprintf("Cluster functionality related to nodes: %s roles: %s will be unavailable", strings.Join(gOpt.Nodes, ","), strings.Join(gOpt.Roles, ","))
+			nodesToRestart = strings.Join(gOpt.Nodes, ",")
+			rolesToRestart = strings.Join(gOpt.Roles, ",")
+		}
+
+		confirmationMessage := fmt.Sprintf("Will restart the cluster %s with nodes: %s roles: %s.\n%s\nDo you want to continue? [y/N]:",
+			color.HiYellowString(name),
+			color.HiYellowString(nodesToRestart),
+			color.HiYellowString(rolesToRestart),
+			availabilityMessage,
+		)
+		if err := tui.PromptForConfirmOrAbortError(confirmationMessage); err != nil {
 			return err
 		}
 	}
@@ -277,11 +290,11 @@ func getMonitorHosts(topo spec.Topology) (map[string]hostInfo, set.StringSet) {
 	topo.IterInstance(func(inst spec.Instance) {
 		// add the instance to ignore list if it marks itself as ignore_exporter
 		if inst.IgnoreMonitorAgent() {
-			noAgentHosts.Insert(inst.GetHost())
+			noAgentHosts.Insert(inst.GetManageHost())
 		}
 
-		if _, found := uniqueHosts[inst.GetHost()]; !found {
-			uniqueHosts[inst.GetHost()] = hostInfo{
+		if _, found := uniqueHosts[inst.GetManageHost()]; !found {
+			uniqueHosts[inst.GetManageHost()] = hostInfo{
 				ssh:  inst.GetSSHPort(),
 				os:   inst.OS(),
 				arch: inst.Arch(),
@@ -296,7 +309,7 @@ func getMonitorHosts(topo spec.Topology) (map[string]hostInfo, set.StringSet) {
 func checkTiFlashWithTLS(topo spec.Topology, version string) error {
 	if clusterSpec, ok := topo.(*spec.Specification); ok {
 		if clusterSpec.GlobalOptions.TLSEnabled {
-			if (semver.Compare(version, "v4.0.5") < 0 &&
+			if (!tidbver.TiFlashSupportTLS(version) &&
 				len(clusterSpec.TiFlashServers) > 0) &&
 				version != utils.NightlyVersionAlias {
 				return fmt.Errorf("TiFlash %s is not supported in TLS enabled cluster", version)
@@ -367,7 +380,7 @@ func (m *Manager) RestoreClusterMeta(clusterName, filePath string, skipConfirm b
 		); err != nil {
 			return err
 		}
-		m.logger.Infof("Destroying cluster...")
+		m.logger.Infof("Restoring cluster meta files...")
 	}
 	err = os.RemoveAll(m.specManager.Path(clusterName))
 	if err != nil {

@@ -29,7 +29,6 @@ import (
 
 	"github.com/fatih/color"
 	perrs "github.com/pingcap/errors"
-	"github.com/pingcap/tiup/pkg/cluster/spec"
 	"github.com/pingcap/tiup/pkg/environment"
 	"github.com/pingcap/tiup/pkg/localdata"
 	"github.com/pingcap/tiup/pkg/repository"
@@ -132,7 +131,7 @@ func newMirrorSignCmd() *cobra.Command {
 				return err
 			}
 
-			if err = os.WriteFile(args[0], data, 0664); err != nil {
+			if err = utils.WriteFile(args[0], data, 0664); err != nil {
 				return perrs.Annotatef(err, "write manifest file %s", args[0])
 			}
 
@@ -164,8 +163,9 @@ func newMirrorShowCmd() *cobra.Command {
 // the `mirror set` sub command
 func newMirrorSetCmd() *cobra.Command {
 	var (
-		root  string
-		reset bool
+		root   string
+		reset  bool
+		silent bool
 	)
 	cmd := &cobra.Command{
 		Use:   "set <mirror-addr>",
@@ -199,12 +199,15 @@ The root manifest in $TIUP_HOME will be replaced with the one in given repositor
 				log.Errorf("Failed to set mirror: %s\n", err.Error())
 				return err
 			}
-			fmt.Printf("Successfully set mirror to %s\n", addr)
+			if !silent {
+				fmt.Printf("Successfully set mirror to %s\n", addr)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&root, "root", "r", root, "Specify the path of `root.json`")
 	cmd.Flags().BoolVar(&reset, "reset", false, "Reset mirror to use the default address.")
+	cmd.Flags().BoolVar(&silent, "silent", false, "Skip non-warning messages.")
 
 	return cmd
 }
@@ -282,7 +285,7 @@ func newMirrorModifyCmd() *cobra.Command {
 			env := environment.GlobalEnv()
 
 			comp, ver := environment.ParseCompVersion(component)
-			m, err := env.V1Repository().FetchComponentManifest(comp, true)
+			m, err := env.V1Repository().GetComponentManifest(comp, true)
 			if err != nil {
 				return err
 			}
@@ -359,14 +362,17 @@ func newMirrorRenewCmd() *cobra.Command {
 			env := environment.GlobalEnv()
 
 			comp, _ := environment.ParseCompVersion(component)
-			m, err := env.V1Repository().FetchComponentManifest(comp, true)
+			m, err := env.V1Repository().GetComponentManifest(comp, true)
 			if err != nil {
 				// ignore manifest expiration error
-				if v1manifest.IsExpirationError(perrs.Cause(err)) {
-					fmt.Println(err)
-				} else {
+				if !v1manifest.IsExpirationError(perrs.Cause(err)) {
 					return err
 				}
+				fmt.Printf("Ignoring expiration error: %s", err)
+			}
+
+			if m == nil {
+				return errors.New("got nil manifest")
 			}
 
 			if days > 0 {
@@ -417,7 +423,7 @@ func newTransferOwnerCmd() *cobra.Command {
 				return fmt.Errorf("new owner '%s' is not in the available owner list", newOwnerName)
 			}
 
-			m, err := env.V1Repository().FetchComponentManifest(component, true)
+			m, err := env.V1Repository().GetComponentManifest(component, true)
 			if err != nil {
 				return err
 			}
@@ -680,15 +686,14 @@ func doPublish(
 ) error {
 	env := environment.GlobalEnv()
 	env.V1Repository().PurgeTimestamp()
-	m, err := env.V1Repository().FetchComponentManifest(component, true)
+	m, err := env.V1Repository().GetComponentManifest(component, true)
 	if err != nil {
-		if perrs.Cause(err) == repository.ErrUnknownComponent {
-			fmt.Printf("Creating component %s\n", component)
-			publishInfo.Stand = &standalone
-			publishInfo.Hide = &hidden
-		} else {
+		if perrs.Cause(err) != repository.ErrUnknownComponent {
 			return err
 		}
+		fmt.Printf("Creating component %s\n", component)
+		publishInfo.Stand = &standalone
+		publishInfo.Hide = &hidden
 	} else if flagSet.Exist("standalone") || flagSet.Exist("hide") {
 		fmt.Println("This is not a new component, --standalone and --hide flag will be omitted")
 	}
@@ -953,7 +958,8 @@ func newMirrorCloneCmd() *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use: "clone <target-dir> [global version]",
-		Example: `  tiup mirror clone /path/to/local --arch amd64,arm --os linux,darwin    # Specify the architectures and OSs
+		Example: `  tiup mirror clone /path/to/local --arch amd64,arm64 --os linux,darwin    # Specify the architectures and OSs
+  tiup mirror clone /path/to/local --os linux v6.1.0 v5.4.0              # Specify multiple versions
   tiup mirror clone /path/to/local --full                                # Build a full local mirror
   tiup mirror clone /path/to/local --tikv v4  --prefix                   # Specify the version via prefix
   tiup mirror clone /path/to/local --tidb all --pd all                   # Download all version for specific component`,
@@ -991,10 +997,6 @@ func newMirrorCloneCmd() *cobra.Command {
 				}
 			}()
 
-			var versionMapper = func(comp string) string {
-				return spec.TiDBComponentVersion(comp, "")
-			}
-
 			// format input versions
 			versionList := make([]string, 0)
 			for _, ver := range args[1:] {
@@ -1005,7 +1007,7 @@ func newMirrorCloneCmd() *cobra.Command {
 				versionList = append(versionList, v)
 			}
 
-			return repository.CloneMirror(repo, components, versionMapper, args[0], versionList, options)
+			return repository.CloneMirror(repo, components, args[0], versionList, options)
 		},
 	}
 

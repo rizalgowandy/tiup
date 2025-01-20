@@ -17,7 +17,14 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 
+	"github.com/BurntSushi/toml"
+	"github.com/pingcap/errors"
+	"github.com/pingcap/tiup/pkg/cluster/spec"
+	tiupexec "github.com/pingcap/tiup/pkg/exec"
+	"github.com/pingcap/tiup/pkg/tui/colorstr"
 	"github.com/pingcap/tiup/pkg/utils"
 )
 
@@ -29,6 +36,15 @@ type Config struct {
 	Host       string `yaml:"host"`
 	Port       int    `yaml:"port"`
 	UpTimeout  int    `yaml:"up_timeout"`
+	Version    string `yaml:"version"`
+}
+
+// CSEOptions contains configs to run TiDB cluster in CSE mode.
+type CSEOptions struct {
+	S3Endpoint string `yaml:"s3_endpoint"`
+	Bucket     string `yaml:"bucket"`
+	AccessKey  string `yaml:"access_key"`
+	SecretKey  string `yaml:"secret_key"`
 }
 
 type instance struct {
@@ -39,6 +55,13 @@ type instance struct {
 	StatusPort int // client port for PD
 	ConfigPath string
 	BinPath    string
+	Version    utils.Version
+}
+
+// MetricAddr will be used by prometheus scrape_configs.
+type MetricAddr struct {
+	Targets []string          `json:"targets"`
+	Labels  map[string]string `json:"labels"`
 }
 
 // Instance represent running component
@@ -46,25 +69,43 @@ type Instance interface {
 	Pid() int
 	// Start the instance process.
 	// Will kill the process once the context is done.
-	Start(ctx context.Context, version utils.Version) error
+	Start(ctx context.Context) error
 	// Component Return the component name.
 	Component() string
 	// LogFile return the log file name
 	LogFile() string
 	// Uptime show uptime.
 	Uptime() string
-	// StatusAddrs return the address to pull metrics.
-	StatusAddrs() []string
+	// MetricAddr return the address to pull metrics.
+	MetricAddr() MetricAddr
 	// Wait Should only call this if the instance is started successfully.
 	// The implementation should be safe to call Wait multi times.
 	Wait() error
+	// PrepareBinary use given binpath or download from tiup mirrors.
+	PrepareBinary(binaryName string, componentName string, version utils.Version) error
 }
 
-func (inst *instance) StatusAddrs() (addrs []string) {
+func (inst *instance) MetricAddr() (r MetricAddr) {
 	if inst.Host != "" && inst.StatusPort != 0 {
-		addrs = append(addrs, fmt.Sprintf("%s:%d", inst.Host, inst.StatusPort))
+		r.Targets = append(r.Targets, utils.JoinHostPort(inst.Host, inst.StatusPort))
 	}
 	return
+}
+
+func (inst *instance) PrepareBinary(binaryName string, componentName string, version utils.Version) error {
+	instanceBinPath, err := tiupexec.PrepareBinary(binaryName, version, inst.BinPath)
+	if err != nil {
+		return err
+	}
+	// distinguish whether the instance is started by specific binary path.
+	if inst.BinPath == "" {
+		colorstr.Printf("[dark_gray]Start %s instance: %s[reset]\n", componentName, version)
+	} else {
+		colorstr.Printf("[dark_gray]Start %s instance: %s[reset]\n", componentName, instanceBinPath)
+	}
+	inst.Version = version
+	inst.BinPath = instanceBinPath
+	return nil
 }
 
 // CompVersion return the format to run specified version of a component.
@@ -103,11 +144,56 @@ func logIfErr(err error) {
 func pdEndpoints(pds []*PDInstance, isHTTP bool) []string {
 	var endpoints []string
 	for _, pd := range pds {
+		if pd.Role == PDRoleTSO || pd.Role == PDRoleScheduling {
+			continue
+		}
 		if isHTTP {
-			endpoints = append(endpoints, fmt.Sprintf("http://%s:%d", AdvertiseHost(pd.Host), pd.StatusPort))
+			endpoints = append(endpoints, "http://"+utils.JoinHostPort(AdvertiseHost(pd.Host), pd.StatusPort))
 		} else {
-			endpoints = append(endpoints, fmt.Sprintf("%s:%d", AdvertiseHost(pd.Host), pd.StatusPort))
+			endpoints = append(endpoints, utils.JoinHostPort(AdvertiseHost(pd.Host), pd.StatusPort))
 		}
 	}
 	return endpoints
+}
+
+// prepareConfig accepts a user specified config and merge user config with a
+// pre-defined one.
+func prepareConfig(outputConfigPath string, userConfigPath string, preDefinedConfig map[string]any) error {
+	dir := filepath.Dir(outputConfigPath)
+	if err := utils.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	userConfig, err := unmarshalConfig(userConfigPath)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if userConfig == nil {
+		userConfig = make(map[string]any)
+	}
+
+	cf, err := os.Create(outputConfigPath)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	enc := toml.NewEncoder(cf)
+	enc.Indent = ""
+	return enc.Encode(spec.MergeConfig(preDefinedConfig, userConfig))
+}
+
+func unmarshalConfig(path string) (map[string]any, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	c := make(map[string]any)
+	err = toml.Unmarshal(data, &c)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }

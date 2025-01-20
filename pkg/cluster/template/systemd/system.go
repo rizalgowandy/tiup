@@ -15,11 +15,11 @@ package system
 
 import (
 	"bytes"
-	"os"
 	"path"
 	"text/template"
 
 	"github.com/pingcap/tiup/embed"
+	"github.com/pingcap/tiup/pkg/utils"
 )
 
 // Config represent the data to generate systemd config
@@ -36,7 +36,8 @@ type Config struct {
 	GrantCapNetRaw      bool
 	// Takes one of no, on-success, on-failure, on-abnormal, on-watchdog, on-abort, or always.
 	// The Template set as always if this is not setted.
-	Restart string
+	Restart     string
+	SystemdMode string
 }
 
 // NewConfig returns a Config with given arguments
@@ -78,13 +79,19 @@ func (c *Config) WithLimitCORE(core string) *Config {
 	return c
 }
 
+// WithSystemdMode set the SystemdMode field of Config
+func (c *Config) WithSystemdMode(mode string) *Config {
+	c.SystemdMode = mode
+	return c
+}
+
 // ConfigToFile write config content to specific path
 func (c *Config) ConfigToFile(file string) error {
 	config, err := c.Config()
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(file, config, 0755)
+	return utils.WriteFile(file, config, 0755)
 }
 
 // Config generate the config file data.

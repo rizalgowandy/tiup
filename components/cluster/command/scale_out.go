@@ -50,12 +50,11 @@ func newScaleOutCmd() *cobra.Command {
 			if opt.Stage2 && len(args) == 1 {
 				clusterName = args[0]
 			} else {
-				if len(args) == 2 {
-					clusterName = args[0]
-					topoFile = args[1]
-				} else {
+				if len(args) != 2 {
 					return cmd.Help()
 				}
+				clusterName = args[0]
+				topoFile = args[1]
 			}
 
 			clusterReport.ID = scrubClusterName(clusterName)
@@ -75,6 +74,16 @@ func newScaleOutCmd() *cobra.Command {
 				skipConfirm,
 				gOpt,
 			)
+		},
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			switch len(args) {
+			case 0:
+				return shellCompGetClusterName(cm, toComplete)
+			case 1:
+				return nil, cobra.ShellCompDirectiveDefault
+			default:
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
 		},
 	}
 

@@ -39,14 +39,24 @@ func newReloadCmd() *cobra.Command {
 
 			return cm.Reload(clusterName, gOpt, skipRestart, skipConfirm)
 		},
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			switch len(args) {
+			case 0:
+				return shellCompGetClusterName(cm, toComplete)
+			default:
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+		},
 	}
 
 	cmd.Flags().BoolVar(&gOpt.Force, "force", false, "Force reload without transferring PD leader and ignore remote error")
 	cmd.Flags().StringSliceVarP(&gOpt.Roles, "role", "R", nil, "Only reload specified roles")
 	cmd.Flags().StringSliceVarP(&gOpt.Nodes, "node", "N", nil, "Only reload specified nodes")
-	cmd.Flags().Uint64Var(&gOpt.APITimeout, "transfer-timeout", 300, "Timeout in seconds when transferring PD and TiKV store leaders")
+	cmd.Flags().Uint64Var(&gOpt.APITimeout, "transfer-timeout", 600, "Timeout in seconds when transferring PD and TiKV store leaders, also for TiCDC drain one capture")
 	cmd.Flags().BoolVarP(&gOpt.IgnoreConfigCheck, "ignore-config-check", "", false, "Ignore the config check result")
 	cmd.Flags().BoolVar(&skipRestart, "skip-restart", false, "Only refresh configuration to remote and do not restart services")
+	cmd.Flags().StringVar(&gOpt.SSHCustomScripts.BeforeRestartInstance.Raw, "pre-restart-script", "", "(EXPERIMENTAL) Custom script to be executed on each server before the service is restarted, does not take effect when --skip-restart is set to true")
+	cmd.Flags().StringVar(&gOpt.SSHCustomScripts.AfterRestartInstance.Raw, "post-restart-script", "", "(EXPERIMENTAL) Custom script to be executed on each server after the service is restarted, does not take effect when --skip-restart is set to true")
 
 	return cmd
 }

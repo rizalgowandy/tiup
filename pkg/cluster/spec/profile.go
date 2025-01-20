@@ -19,10 +19,9 @@ import (
 	"path"
 	"path/filepath"
 
-	utils2 "github.com/pingcap/tiup/pkg/utils"
-
 	"github.com/pingcap/errors"
 	tiuplocaldata "github.com/pingcap/tiup/pkg/localdata"
+	"github.com/pingcap/tiup/pkg/utils"
 )
 
 // sub directory names
@@ -59,14 +58,19 @@ var initialized = false
 // The directory will be created before return if it does not already exist.
 func Initialize(base string) error {
 	tiupData := os.Getenv(tiuplocaldata.EnvNameComponentDataDir)
-	if tiupData == "" {
+	tiupHome := os.Getenv(tiuplocaldata.EnvNameHome)
+
+	switch {
+	case tiupData != "":
+		profileDir = tiupData
+	case tiupHome != "":
+		profileDir = path.Join(tiupHome, tiuplocaldata.StorageParentDir, base)
+	default:
 		homeDir, err := getHomeDir()
 		if err != nil {
 			return errors.Trace(err)
 		}
 		profileDir = path.Join(homeDir, ".tiup", tiuplocaldata.StorageParentDir, base)
-	} else {
-		profileDir = tiupData
 	}
 
 	clusterBaseDir := filepath.Join(profileDir, TiUPClusterDir)
@@ -77,7 +81,7 @@ func Initialize(base string) error {
 	})
 	initialized = true
 	// make sure the dir exist
-	return utils2.CreateDir(profileDir)
+	return utils.MkdirAll(profileDir, 0755)
 }
 
 // ProfileDir returns the full profile directory path of TiUP.

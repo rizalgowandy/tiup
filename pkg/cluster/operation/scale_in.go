@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +31,7 @@ import (
 	"github.com/pingcap/tiup/pkg/set"
 	"github.com/pingcap/tiup/pkg/tui"
 	"github.com/pingcap/tiup/pkg/utils"
+	"golang.org/x/sync/errgroup"
 )
 
 // TODO: We can make drainer not async.
@@ -83,6 +83,8 @@ func ScaleIn(
 }
 
 // ScaleInCluster scales in the cluster
+//
+//revive:disable
 func ScaleInCluster(
 	ctx context.Context,
 	cluster *spec.Specification,
@@ -98,7 +100,7 @@ func ScaleInCluster(
 	for _, component := range cluster.ComponentsByStartOrder() {
 		for _, instance := range component.Instances() {
 			instances[instance.ID()] = instance
-			instCount[instance.GetHost()]++
+			instCount[instance.GetManageHost()]++
 		}
 	}
 
@@ -180,7 +182,7 @@ func ScaleInCluster(
 		defer tcpProxy.Close(closeC)
 		pdEndpoints = tcpProxy.GetEndpoints()
 	}
-	binlogClient, err := api.NewBinlogClient(pdEndpoints, tlsCfg)
+	binlogClient, err := api.NewBinlogClient(pdEndpoints, 5*time.Second, tlsCfg)
 	if err != nil {
 		return err
 	}
@@ -199,8 +201,8 @@ func ScaleInCluster(
 					}
 				}
 
-				instCount[instance.GetHost()]--
-				if err := StopAndDestroyInstance(ctx, cluster, instance, options, instCount[instance.GetHost()] == 0); err != nil {
+				instCount[instance.GetManageHost()]--
+				if err := StopAndDestroyInstance(ctx, cluster, instance, options, true, instCount[instance.GetManageHost()] == 0, tlsCfg); err != nil {
 					logger.Warnf("failed to stop/destroy %s: %v", compName, err)
 				}
 
@@ -259,11 +261,33 @@ func ScaleInCluster(
 		}
 	}
 
+	cdcInstances := make([]spec.Instance, 0)
 	// Delete member from cluster
 	for _, component := range cluster.ComponentsByStartOrder() {
+		deferInstances := make([]spec.Instance, 0)
 		for _, instance := range component.Instances() {
 			if !deletedNodes.Exist(instance.ID()) {
 				continue
+			}
+
+			// skip cdc at the moment, handle them separately.
+			if component.Role() == spec.ComponentCDC {
+				cdcInstances = append(cdcInstances, instance)
+				continue
+			}
+
+			if component.Role() == spec.ComponentPD {
+				// defer PD leader to be scale-in after others
+				isLeader, err := instance.(*spec.PDInstance).IsLeader(ctx, cluster, int(options.APITimeout), tlsCfg)
+				if err != nil {
+					logger.Warnf("cannot found pd leader, ignore: %s", err)
+					return err
+				}
+				if isLeader {
+					deferInstances = append(deferInstances, instance)
+					logger.Debugf("Deferred scale-in of PD leader %s", instance.ID())
+					continue
+				}
 			}
 
 			err := deleteMember(ctx, component, instance, pdClient, binlogClient, options.APITimeout)
@@ -272,8 +296,34 @@ func ScaleInCluster(
 			}
 
 			if !asyncOfflineComps.Exist(instance.ComponentName()) {
-				instCount[instance.GetHost()]--
-				if err := StopAndDestroyInstance(ctx, cluster, instance, options, instCount[instance.GetHost()] == 0); err != nil {
+				instCount[instance.GetManageHost()]--
+				if err := StopAndDestroyInstance(ctx, cluster, instance, options, false, instCount[instance.GetManageHost()] == 0, tlsCfg); err != nil {
+					return err
+				}
+			} else {
+				logger.Warnf(color.YellowString("The component `%s` will become tombstone, maybe exists in several minutes or hours, after that you can use the prune command to clean it",
+					component.Name()))
+			}
+		}
+
+		// process deferred instances
+		for _, instance := range deferInstances {
+			// actually, it must be the pd leader at the moment, so the `PreRestart` always triggered.
+			rollingInstance, ok := instance.(spec.RollingUpdateInstance)
+			if ok {
+				if err := rollingInstance.PreRestart(ctx, cluster, int(options.APITimeout), tlsCfg); err != nil {
+					return errors.Trace(err)
+				}
+			}
+
+			err := deleteMember(ctx, component, instance, pdClient, binlogClient, options.APITimeout)
+			if err != nil {
+				return errors.Trace(err)
+			}
+
+			if !asyncOfflineComps.Exist(instance.ComponentName()) {
+				instCount[instance.GetManageHost()]--
+				if err := StopAndDestroyInstance(ctx, cluster, instance, options, false, instCount[instance.GetManageHost()] == 0, tlsCfg); err != nil {
 					return err
 				}
 			} else {
@@ -283,9 +333,16 @@ func ScaleInCluster(
 		}
 	}
 
+	if len(cdcInstances) != 0 {
+		err := scaleInCDC(ctx, cluster, cdcInstances, tlsCfg, options, instCount)
+		if err != nil {
+			return errors.Trace(err)
+		}
+	}
+
 	for i := 0; i < len(cluster.TiKVServers); i++ {
 		s := cluster.TiKVServers[i]
-		id := s.Host + ":" + strconv.Itoa(s.Port)
+		id := utils.JoinHostPort(s.Host, s.Port)
 		if !deletedNodes.Exist(id) {
 			continue
 		}
@@ -295,7 +352,7 @@ func ScaleInCluster(
 
 	for i := 0; i < len(cluster.TiFlashServers); i++ {
 		s := cluster.TiFlashServers[i]
-		id := s.Host + ":" + strconv.Itoa(s.TCPPort)
+		id := utils.JoinHostPort(s.Host, s.TCPPort)
 		if !deletedNodes.Exist(id) {
 			continue
 		}
@@ -305,7 +362,7 @@ func ScaleInCluster(
 
 	for i := 0; i < len(cluster.PumpServers); i++ {
 		s := cluster.PumpServers[i]
-		id := s.Host + ":" + strconv.Itoa(s.Port)
+		id := utils.JoinHostPort(s.Host, s.Port)
 		if !deletedNodes.Exist(id) {
 			continue
 		}
@@ -315,7 +372,7 @@ func ScaleInCluster(
 
 	for i := 0; i < len(cluster.Drainers); i++ {
 		s := cluster.Drainers[i]
-		id := s.Host + ":" + strconv.Itoa(s.Port)
+		id := utils.JoinHostPort(s.Host, s.Port)
 		if !deletedNodes.Exist(id) {
 			continue
 		}
@@ -345,7 +402,7 @@ func deleteMember(
 			return err
 		}
 	case spec.ComponentTiFlash:
-		addr := instance.GetHost() + ":" + strconv.Itoa(instance.(*spec.TiFlashInstance).GetServicePort())
+		addr := utils.JoinHostPort(instance.GetHost(), instance.(*spec.TiFlashInstance).GetServicePort())
 		if err := pdClient.DelStore(addr, timeoutOpt); err != nil {
 			return err
 		}
@@ -354,15 +411,78 @@ func deleteMember(
 			return err
 		}
 	case spec.ComponentDrainer:
-		addr := instance.GetHost() + ":" + strconv.Itoa(instance.GetPort())
+		addr := utils.JoinHostPort(instance.GetHost(), instance.GetPort())
 		err := binlogClient.OfflineDrainer(ctx, addr)
 		if err != nil {
 			return err
 		}
 	case spec.ComponentPump:
-		addr := instance.GetHost() + ":" + strconv.Itoa(instance.GetPort())
+		addr := utils.JoinHostPort(instance.GetHost(), instance.GetPort())
 		err := binlogClient.OfflinePump(ctx, addr)
 		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func scaleInCDC(
+	ctx context.Context,
+	cluster *spec.Specification,
+	instances []spec.Instance,
+	tlsCfg *tls.Config,
+	options Options,
+	instCount map[string]int,
+) error {
+	logger := ctx.Value(logprinter.ContextKeyLogger).(*logprinter.Logger)
+
+	// if all cdc instances are selected, just stop all instances by force
+	if len(instances) == len(cluster.CDCServers) {
+		g, _ := errgroup.WithContext(ctx)
+		for _, ins := range instances {
+			ins := ins
+			instCount[ins.GetManageHost()]++
+			destroyNode := instCount[ins.GetManageHost()] == 0
+			g.Go(func() error {
+				return StopAndDestroyInstance(ctx, cluster, ins, options, true, destroyNode, tlsCfg)
+			})
+		}
+		return g.Wait()
+	}
+
+	deferInstances := make([]spec.Instance, 0, 1)
+	for _, instance := range instances {
+		address := instance.(*spec.CDCInstance).GetAddr()
+		client := api.NewCDCOpenAPIClient(ctx, []string{utils.JoinHostPort(instance.GetManageHost(), instance.GetPort())}, 5*time.Second, tlsCfg)
+
+		capture, err := client.GetCaptureByAddr(address)
+		if err != nil {
+			// this may be caused by that the instance is not running, or the specified version of cdc does not support open api
+			logger.Debugf("scale-in cdc, get capture by address failed, stop the instance by force, "+
+				"addr: %s, err: %+v", address, err)
+			instCount[instance.GetManageHost()]--
+			if err := StopAndDestroyInstance(ctx, cluster, instance, options, true, instCount[instance.GetManageHost()] == 0, tlsCfg); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if capture.IsOwner {
+			deferInstances = append(deferInstances, instance)
+			logger.Debugf("Deferred scale-in the TiCDC owner %s", instance.ID())
+			continue
+		}
+
+		instCount[instance.GetManageHost()]--
+		if err := StopAndDestroyInstance(ctx, cluster, instance, options, false, instCount[instance.GetManageHost()] == 0, tlsCfg); err != nil {
+			return err
+		}
+	}
+
+	for _, instance := range deferInstances {
+		instCount[instance.GetManageHost()]--
+		if err := StopAndDestroyInstance(ctx, cluster, instance, options, false, instCount[instance.GetManageHost()] == 0, tlsCfg); err != nil {
 			return err
 		}
 	}

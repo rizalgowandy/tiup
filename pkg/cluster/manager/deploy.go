@@ -17,7 +17,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -149,7 +148,25 @@ func (m *Manager) Deploy(
 		}
 	}
 
-	if err := m.fillHost(sshConnProps, sshProxyProps, topo, &gOpt, opt.User); err != nil {
+	var sudo bool
+	systemdMode := topo.BaseTopo().GlobalOptions.SystemdMode
+	if systemdMode == spec.UserMode {
+		sudo = false
+		hint := fmt.Sprintf("loginctl enable-linger %s", opt.User)
+
+		msg := "The value of systemd_mode is set to `user` in the topology, please note that you'll need to manually execute the following command using root or sudo on the host(s) to enable lingering for the systemd user instance.\n"
+		msg += color.GreenString(hint)
+		msg += "\nYou can read the systemd documentation for reference: https://wiki.archlinux.org/title/Systemd/User#Automatic_start-up_of_systemd_user_instances."
+		m.logger.Warnf(msg)
+		err = tui.PromptForConfirmOrAbortError("Do you want to continue? [y/N]: ")
+		if err != nil {
+			return err
+		}
+	} else {
+		sudo = true
+	}
+
+	if err := m.fillHost(sshConnProps, sshProxyProps, topo, &gOpt, opt.User, opt.User != "root" && systemdMode != spec.UserMode); err != nil {
 		return err
 	}
 
@@ -159,7 +176,7 @@ func (m *Manager) Deploy(
 		}
 	}
 
-	if err := os.MkdirAll(m.specManager.Path(name), 0755); err != nil {
+	if err := utils.MkdirAll(m.specManager.Path(name), 0755); err != nil {
 		return errorx.InitializationFailed.
 			Wrap(err, "Failed to create cluster metadata directory '%s'", m.specManager.Path(name)).
 			WithProperty(tui.SuggestionFromString("Please check file system permissions and try again."))
@@ -214,7 +231,9 @@ func (m *Manager) Deploy(
 		if strings.HasPrefix(globalOptions.DataDir, "/") {
 			dirs = append(dirs, globalOptions.DataDir)
 		}
-
+		if systemdMode == spec.UserMode {
+			dirs = append(dirs, spec.Abs(globalOptions.User, ".config/systemd/user"))
+		}
 		t := task.NewBuilder(m.logger).
 			RootSSH(
 				host,
@@ -234,9 +253,10 @@ func (m *Manager) Deploy(
 				gOpt.SSHProxyTimeout,
 				gOpt.SSHType,
 				globalOptions.SSHType,
+				opt.User != "root" && systemdMode != spec.UserMode,
 			).
-			EnvInit(host, globalOptions.User, globalOptions.Group, opt.SkipCreateUser || globalOptions.User == opt.User).
-			Mkdir(globalOptions.User, host, dirs...).
+			EnvInit(host, globalOptions.User, globalOptions.Group, opt.SkipCreateUser || globalOptions.User == opt.User, sudo).
+			Mkdir(globalOptions.User, host, sudo, dirs...).
 			BuildAsStep(fmt.Sprintf("  - Prepare %s:%d", host, hostInfo.ssh))
 		envInitTasks = append(envInitTasks, t)
 	}
@@ -246,11 +266,11 @@ func (m *Manager) Deploy(
 	}
 
 	// Download missing component
-	downloadCompTasks = buildDownloadCompTasks(clusterVersion, topo, m.logger, gOpt, m.bindVersion)
+	downloadCompTasks = buildDownloadCompTasks(clusterVersion, topo, m.logger, gOpt)
 
 	// Deploy components to remote
 	topo.IterInstance(func(inst spec.Instance) {
-		version := m.bindVersion(inst.ComponentName(), clusterVersion)
+		version := inst.CalculateVersion(clusterVersion)
 		deployDir := spec.Abs(globalOptions.User, inst.DeployDir())
 		// data dir would be empty for components which don't need it
 		dataDirs := spec.MultiDirAbs(globalOptions.User, inst.DataDir())
@@ -265,9 +285,9 @@ func (m *Manager) Deploy(
 			filepath.Join(deployDir, "scripts"),
 		}
 
-		t := task.NewSimpleUerSSH(m.logger, inst.GetHost(), inst.GetSSHPort(), globalOptions.User, gOpt, sshProxyProps, globalOptions.SSHType).
-			Mkdir(globalOptions.User, inst.GetHost(), deployDirs...).
-			Mkdir(globalOptions.User, inst.GetHost(), dataDirs...)
+		t := task.NewSimpleUerSSH(m.logger, inst.GetManageHost(), inst.GetSSHPort(), globalOptions.User, gOpt, sshProxyProps, globalOptions.SSHType).
+			Mkdir(globalOptions.User, inst.GetManageHost(), sudo, deployDirs...).
+			Mkdir(globalOptions.User, inst.GetManageHost(), sudo, dataDirs...)
 
 		if deployerInstance, ok := inst.(DeployerInstance); ok {
 			deployerInstance.Deploy(t, "", deployDir, version, name, clusterVersion)
@@ -286,19 +306,19 @@ func (m *Manager) Deploy(
 				t = t.DeploySpark(inst, sparkVer.String(), "" /* default srcPath */, deployDir)
 			default:
 				t = t.CopyComponent(
-					inst.ComponentName(),
+					inst.ComponentSource(),
 					inst.OS(),
 					inst.Arch(),
 					version,
 					"", // use default srcPath
-					inst.GetHost(),
+					inst.GetManageHost(),
 					deployDir,
 				)
 			}
 		}
 
 		deployCompTasks = append(deployCompTasks,
-			t.BuildAsStep(fmt.Sprintf("  - Copy %s -> %s", inst.ComponentName(), inst.GetHost())),
+			t.BuildAsStep(fmt.Sprintf("  - Copy %s -> %s", inst.ComponentName(), inst.GetManageHost())),
 		)
 	})
 
@@ -311,6 +331,11 @@ func (m *Manager) Deploy(
 	if err != nil {
 		return err
 	}
+	sessionCertTasks, err := buildSessionCertTasks(m, name, nil, topo, metadata.GetBaseMeta(), gOpt, sshProxyProps)
+	if err != nil {
+		return err
+	}
+	certificateTasks = append(certificateTasks, sessionCertTasks...)
 
 	refreshConfigTasks, _ := buildInitConfigTasks(m, name, topo, metadata.GetBaseMeta(), gOpt, nil)
 
@@ -321,7 +346,6 @@ func (m *Manager) Deploy(
 		noAgentHosts,
 		globalOptions,
 		topo.GetMonitoredOptions(),
-		clusterVersion,
 		gOpt,
 		sshProxyProps,
 	)

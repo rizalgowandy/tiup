@@ -37,6 +37,7 @@ var (
 	CheckTypeFIO          = "fio"
 	CheckTypePermission   = "permission"
 	ChecktypeIsExist      = "exist"
+	CheckTypeTimeZone     = "timezone"
 )
 
 // place the check utilities are stored
@@ -54,7 +55,7 @@ type CheckSys struct {
 }
 
 func storeResults(ctx context.Context, host string, results []*operator.CheckResult) {
-	rr := []interface{}{}
+	rr := []any{}
 	for _, r := range results {
 		rr = append(rr, r)
 	}
@@ -67,7 +68,10 @@ func (c *CheckSys) Execute(ctx context.Context) error {
 	if len(stderr) > 0 && len(stdout) == 0 {
 		return ErrNoOutput
 	}
-
+	sudo := true
+	if c.topo.BaseTopo().GlobalOptions.SystemdMode == spec.UserMode {
+		sudo = false
+	}
 	switch c.check {
 	case CheckTypeSystemInfo:
 		storeResults(ctx, c.host, operator.CheckSystemInfo(c.opt, stdout))
@@ -81,8 +85,8 @@ func (c *CheckSys) Execute(ctx context.Context) error {
 		}
 		results = append(
 			results,
-			operator.CheckSELinux(ctx, e),
-			operator.CheckTHP(ctx, e),
+			operator.CheckSELinux(ctx, e, sudo),
+			operator.CheckTHP(ctx, e, sudo),
 		)
 		storeResults(ctx, c.host, results)
 	case CheckTypePort:
@@ -97,9 +101,9 @@ func (c *CheckSys) Execute(ctx context.Context) error {
 		// check services
 		results = append(
 			results,
-			operator.CheckServices(ctx, e, c.host, "irqbalance", false),
+			operator.CheckServices(ctx, e, c.host, "irqbalance", false, spec.SystemdMode(string(c.topo.BaseTopo().GlobalOptions.SystemdMode))),
 			// FIXME: set firewalld rules in deploy, and not disabling it anymore
-			operator.CheckServices(ctx, e, c.host, "firewalld", true),
+			operator.CheckServices(ctx, e, c.host, "firewalld", true, spec.SystemdMode(string(c.topo.BaseTopo().GlobalOptions.SystemdMode))),
 		)
 		storeResults(ctx, c.host, results)
 	case CheckTypePackage: // check if a command present, and if a package installed
@@ -155,6 +159,8 @@ func (c *CheckSys) Execute(ctx context.Context) error {
 		}
 		// check partition mount options for data_dir
 		storeResults(ctx, c.host, operator.CheckDirIsExist(ctx, e, c.checkDir))
+	case CheckTypeTimeZone:
+		storeResults(ctx, c.host, operator.CheckTimeZone(ctx, c.topo, c.host, stdout))
 	}
 
 	return nil

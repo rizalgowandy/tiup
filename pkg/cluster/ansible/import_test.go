@@ -124,22 +124,28 @@ server_configs:
         binlog.enable: true
     tikv: {}
     pd: {}
+    tso: {}
+    scheduling: {}
+    tidb_dashboard: {}
     tiflash: {}
+    tiproxy: {}
     tiflash-learner: {}
     pump: {}
     drainer: {}
     cdc: {}
+    kvcdc: {}
     grafana: {}
 tidb_servers: []
 tikv_servers: []
 tiflash_servers: []
+tiproxy_servers: []
 pd_servers: []
 monitoring_servers: []
 `)
 
 	topo, err := yaml.Marshal(clsMeta.Topology)
 	c.Assert(err, IsNil)
-	c.Assert(topo, DeepEquals, expected)
+	c.Assert(string(topo), DeepEquals, string(expected))
 }
 
 func (s *ansSuite) TestParseGroupVars(c *C) {
@@ -247,7 +253,7 @@ d = "\""
 }
 
 func (s *ansSuite) TestDiffConfig(c *C) {
-	global, locals := diffConfigs([]map[string]interface{}{
+	global, locals := diffConfigs([]map[string]any{
 		{
 			"a":       true,
 			"b":       1,
